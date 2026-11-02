@@ -414,6 +414,34 @@ app.post('/api/payments/init', auth, role('viewer'), wrap(async (req, res) => {
   res.json({ authorization_url: r.data.authorization_url, reference });
 }));
 
+// Direct M-Pesa STK push (no redirect): Paystack Charge API, then the browser polls /verify.
+app.post('/api/payments/mpesa', auth, role('viewer'), wrap(async (req, res) => {
+  const { package_id } = req.body || {};
+  let phone = String((req.body || {}).phone || '').replace(/[\s-]/g, '');
+  if (/^0[17]\d{8}$/.test(phone)) phone = '+254' + phone.slice(1);
+  else if (/^254[17]\d{8}$/.test(phone)) phone = '+' + phone;
+  if (!/^\+254[17]\d{8}$/.test(phone)) return res.status(400).json({ error: 'Enter a valid M-Pesa number, e.g. 0712345678' });
+  const { data: pkg } = await db.from('point_packages').select('*').eq('id', package_id).eq('active', true).maybeSingle();
+  if (!pkg) return res.status(404).json({ error: 'Package not found' });
+  const reference = 'CV' + Date.now().toString(36).toUpperCase() + crypto.randomBytes(5).toString('hex').toUpperCase();
+  const { error: ie } = await db.from('payments').insert({
+    reference, user_id: req.profile.id, package_id: pkg.id, points: pkg.points, amount_kes: pkg.price_kes, channel: 'mobile_money'
+  });
+  if (ie) throw new Error(ie.message);
+  const r = await paystack('POST', '/charge', {
+    email: req.user.email, amount: pkg.price_kes * 100, currency: 'KES', reference,
+    mobile_money: { phone, provider: 'mpesa' },
+    metadata: { user_id: req.profile.id, package: pkg.name, points: pkg.points }
+  });
+  const failed = !r.status || !r.data || r.data.status === 'failed';
+  if (failed) {
+    await db.from('payments').update({ status: 'failed' }).eq('reference', reference);
+    console.error('mpesa charge failed:', JSON.stringify(r).slice(0, 400));
+    return res.status(502).json({ error: (r.data && (r.data.message || r.data.gateway_response)) || r.message || 'Could not send the M-Pesa prompt. Try again.' });
+  }
+  res.json({ reference, message: r.data.display_text || 'Check your phone and enter your M-Pesa PIN.' });
+}));
+
 app.get('/api/payments/verify/:reference', auth, role('viewer'), wrap(async (req, res) => {
   const { data: pay } = await db.from('payments').select('user_id').eq('reference', req.params.reference).maybeSingle();
   if (!pay || pay.user_id !== req.profile.id) return res.status(404).json({ error: 'Payment not found' });
