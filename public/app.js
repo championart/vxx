@@ -397,8 +397,14 @@ route('video', null, async ({ root, args }) => {
   if (!me) { setOv(`<div><h2>Log in to watch</h2><p>Create a free account to watch the first ${v.preview_seconds} seconds of every video.</p><div class="row" style="justify-content:center"><a class="btn" href="#/login">Log in</a><a class="btn alt" href="#/register?type=viewer">Join as a Viewer</a></div></div>`); vid.controls = false; return; }
 
   let play;
-  try { play = await api('/videos/' + encodeURIComponent(id) + '/play', { method: 'POST' }); }
-  catch (e) { setOv(`<div><h2>Can't play this video</h2><p>${esc(e.message)}</p></div>`); vid.controls = false; return; }
+  for (let tries = 0; ; tries++) {
+    try { play = await api('/videos/' + encodeURIComponent(id) + '/play', { method: 'POST' }); break; }
+    catch (e) {
+      if (e.status === 503 && tries < 12) { setOv(`<div><div class="spin"></div><h2>Getting this video ready…</h2><p>This only takes a moment.</p></div>`); vid.controls = false; await new Promise(r => setTimeout(r, 5000)); if (parseHash().name !== 'video') return; continue; }
+      setOv(`<div><h2>Can't play this video</h2><p>${esc(e.message)}</p></div>`); vid.controls = false; return;
+    }
+  }
+  ov.hidden = true; vid.controls = true;
   let unlocked = play.unlocked;
   let price = play.price;
   if (me.account_type === 'viewer' && play.balance != null) { me.points_balance = play.balance; renderTopRight(); }

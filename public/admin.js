@@ -68,7 +68,7 @@ const views = {
           ${!v.has_preview ? `<button class="btn alt sm rb" data-id="${esc(v.id)}">Rebuild preview</button>` : ''}
           <button class="btn bad sm dl" data-id="${esc(v.id)}">Delete</button></div></td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">Nothing here.</div>';
       $$('.rv', el).forEach(b => b.onclick = async () => { try { await api(`/admin/videos/${b.dataset.id}/review`, { method: 'POST', body: { action: b.dataset.a } }); toast('Done'); load(); } catch (e) { toast(e.message, true); } });
-      $$('.rb', el).forEach(b => b.onclick = async () => { busy(b, true, 'Working…'); try { const r = await api(`/admin/videos/${b.dataset.id}/preview`, { method: 'POST' }); toast(r.ok ? 'Preview ready' : 'ffmpeg unavailable on this server', !r.ok); load(); } catch (e) { toast(e.message, true); busy(b, false); } });
+      $$('.rb', el).forEach(b => b.onclick = async () => { busy(b, true, 'Working…'); try { const r = await api(`/admin/videos/${b.dataset.id}/preview`, { method: 'POST' }); toast(r.ok ? 'Preview ready' : ('Preview failed: ' + (r.error || 'unknown reason')), !r.ok); load(); } catch (e) { toast(e.message, true); busy(b, false); } });
       $$('.dl', el).forEach(b => b.onclick = async () => { if (!confirm('Delete this video permanently?')) return; try { await api('/videos/' + b.dataset.id, { method: 'DELETE' }); toast('Deleted'); load(); } catch (e) { toast(e.message, true); } });
       $$('.pr', el).forEach(i => i.onchange = async () => { try { await api(`/admin/videos/${i.dataset.id}/price`, { method: 'PUT', body: { price_points: i.value === '' ? null : i.value } }); toast('Price saved'); } catch (e) { toast(e.message, true); } });
     };
