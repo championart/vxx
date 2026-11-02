@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#ffffff">
+<title>ClipVault – Watch, unlock, earn</title>
+<link rel="stylesheet" href="style.css">
+<script src="config.js"></script>
+</head>
+<body>
+<div id="shell">
+  <aside id="sidebar" aria-label="Main navigation">
+    <a class="logo" href="#/"><span class="logo-mark">C</span>ClipVault</a>
+    <nav id="side-nav"></nav>
+    <div class="side-foot" id="side-foot"></div>
+  </aside>
+  <div id="content">
+    <header id="topbar">
+      <a class="logo logo-sm" href="#/"><span class="logo-mark">C</span>ClipVault</a>
+      <div id="top-right"></div>
+    </header>
+    <main id="main" tabindex="-1"></main>
+    <footer id="foot">
+      <a href="#/terms">Terms</a><a href="#/privacy">Privacy</a><a href="#/payout">Creator payouts</a><a href="#/guidelines">Content guidelines</a>
+      <span>18+ only</span>
+    </footer>
+  </div>
+  <nav id="bottom-nav" aria-label="Main navigation"></nav>
+</div>
+<div id="toasts" aria-live="polite"></div>
+<div id="modal" hidden><div class="modal-box" id="modal-box"></div></div>
+<script src="app.js"></script>
+<script src="creator.js"></script>
+<script src="admin.js"></script>
+</body>
+</html>
