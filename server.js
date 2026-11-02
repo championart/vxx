@@ -182,11 +182,11 @@ app.post('/api/register', authLimiter, wrap(async (req, res) => {
   const u = data.user;
   if (!u || (u.identities && u.identities.length === 0)) return res.status(409).json({ error: 'That email is already registered' });
 
-  let avatarPath = null;
-  try { if (avatar) avatarPath = await saveAvatar(u.id, avatar); } catch (e) { console.error(e.message); }
+  let avatarPath = null, avatarErr = null;
+  try { if (avatar) avatarPath = await saveAvatar(u.id, avatar); } catch (e) { avatarErr = e.message; console.error('avatar save failed:', e.message); }
   if (avatar && !avatarPath && gender === 'female' && account_type === 'curator') {
     await db.auth.admin.deleteUser(u.id);
-    return res.status(400).json({ error: 'Profile picture invalid (use JPG/PNG/WebP under 1.5MB)' });
+    return res.status(avatarErr ? 500 : 400).json({ error: avatarErr ? 'Could not save your profile picture (' + avatarErr + '). Please try again.' : 'Profile picture invalid (use JPG/PNG/WebP under 1.5MB)' });
   }
   const { error: pe } = await db.from('profiles').insert({
     id: u.id, username, gender, account_type, avatar_url: avatarPath, is_adult_confirmed: true
@@ -702,5 +702,19 @@ app.use((err, req, res, next) => {
   console.error(err);
   res.status(500).json({ error: 'Something went wrong. Please try again.' });
 });
+
+// Make sure the storage buckets exist (creates them if the SQL step missed them)
+async function ensureBuckets() {
+  const want = [['videos', false], ['thumbs', true], ['avatars', true]];
+  const { data, error } = await db.storage.listBuckets();
+  if (error) { console.error('Storage check failed:', error.message); return; }
+  const have = new Set((data || []).map(b => b.name));
+  for (const [name, pub] of want) {
+    if (have.has(name)) continue;
+    const r = await db.storage.createBucket(name, { public: pub });
+    console.log(r.error ? `Could not create bucket ${name}: ${r.error.message}` : `Created storage bucket: ${name}`);
+  }
+}
+ensureBuckets().catch(e => console.error('ensureBuckets', e.message));
 
 app.listen(PORT, () => console.log(`VIDXX running on port ${PORT}`));
