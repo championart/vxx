@@ -1,4 +1,4 @@
-# ClipVault
+# VIDXX
 
 Video monetization platform: curators upload videos, viewers watch a free 10-second preview and unlock the full video with points, and curators earn per paid unlock.
 

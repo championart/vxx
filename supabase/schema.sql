@@ -1,4 +1,4 @@
--- ClipVault schema. Run in the Supabase SQL editor (once).
+-- VIDXX schema. Run in the Supabase SQL editor (once).
 -- All money-moving logic lives in SQL functions so it is atomic and idempotent.
 -- The backend uses the service-role key; browsers never touch these tables directly.
 

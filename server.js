@@ -703,4 +703,4 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'Something went wrong. Please try again.' });
 });
 
-app.listen(PORT, () => console.log(`ClipVault running on port ${PORT}`));
+app.listen(PORT, () => console.log(`VIDXX running on port ${PORT}`));

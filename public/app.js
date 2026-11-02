@@ -1,4 +1,4 @@
-/* ClipVault frontend core: router, API client, public + viewer pages. */
+/* VIDXX frontend core: router, API client, public + viewer pages. */
 (() => {
 'use strict';
 const CFG = window.CLIPVAULT || {};
@@ -122,6 +122,7 @@ async function render() {
     if (!S.me) { go('login'); return; }
     if (r.roles !== 'auth' && !r.roles.includes(S.me.account_type)) { toast('That page is not available for your account type', true); go(homeFor(S.me)); return; }
   }
+  document.body.classList.toggle('bd', ['', 'login', 'register'].includes(name));
   updateNav();
   window.scrollTo(0, 0);
   main.innerHTML = loading;
@@ -199,15 +200,9 @@ route('', null, ({ root }) => {
     : `<a class="btn" href="#/register?type=curator">Join as a Curator</a><a class="btn alt" href="#/register?type=viewer">Join as a Viewer</a>`;
   root.innerHTML = `<section class="hero stack">
     <h1>Watch a preview. Unlock with points. Creators get paid.</h1>
-    <p>ClipVault is a lightweight video platform where creators earn every time a viewer unlocks their content.</p>
+    <p>VIDXX is a lightweight video platform where creators earn every time a viewer unlocks their content.</p>
     <div class="row">${cta}</div></section>
-    <h2>How it works</h2>
-    <div class="steps">
-      <div class="card step"><b>1</b><h3>Preview free</h3><p class="muted">Every video plays the first 10 seconds for free.</p></div>
-      <div class="card step"><b>2</b><h3>Unlock with points</h3><p class="muted">Buy points with M-Pesa or card, then unlock the full video once.</p></div>
-      <div class="card step"><b>3</b><h3>Creators earn</h3><p class="muted">Curators are credited for each paid unlock and can withdraw their earnings.</p></div>
-    </div>
-    <p class="small muted" style="margin-top:20px">ClipVault is for adults only (18+). By joining you agree to our <a href="#/terms">Terms</a> and <a href="#/privacy">Privacy Policy</a>.</p>`;
+    <p class="small muted" style="margin-top:20px">VIDXX is for adults only (18+). By joining you agree to our <a href="#/terms">Terms</a> and <a href="#/privacy">Privacy Policy</a>.</p>`;
 });
 
 // --- register ---
@@ -215,7 +210,7 @@ route('register', null, ({ root, query }) => {
   if (S.me) { go(homeFor(S.me)); return; }
   const reg = { type: ['curator', 'viewer'].includes(query.type) ? query.type : '', gender: '', avatar: null };
   const step1 = () => {
-    root.innerHTML = `<div class="stack" style="max-width:520px;margin:0 auto"><h1>Create your account</h1>
+    root.innerHTML = `<div class="stack auth-panel" style="max-width:520px;margin:0 auto"><h1>Create your account</h1>
       <div class="field"><label>I want to join as</label><div class="pick two">
         <label><input type="radio" name="type" value="curator" ${reg.type === 'curator' ? 'checked' : ''}><span>Curator<br><small class="muted">Upload &amp; earn</small></span></label>
         <label><input type="radio" name="type" value="viewer" ${reg.type === 'viewer' ? 'checked' : ''}><span>Viewer<br><small class="muted">Watch &amp; unlock</small></span></label></div></div>
@@ -231,7 +226,7 @@ route('register', null, ({ root, query }) => {
   };
   const step2 = () => {
     const needPic = reg.gender === 'female' && reg.type === 'curator';
-    root.innerHTML = `<form class="stack" id="rf" style="max-width:520px;margin:0 auto" novalidate>
+    root.innerHTML = `<form class="stack auth-panel" id="rf" style="max-width:520px;margin:0 auto" novalidate>
       <button type="button" class="btn ghost sm" id="back">← Back</button>
       <h1>Your details</h1>
       <p class="muted" style="text-transform:capitalize">${esc(reg.type)} account · ${esc(reg.gender)}</p>
@@ -277,7 +272,7 @@ route('register', null, ({ root, query }) => {
 // --- login ---
 route('login', null, ({ root }) => {
   if (S.me) { go(homeFor(S.me)); return; }
-  root.innerHTML = `<form class="stack" id="lf" style="max-width:420px;margin:20px auto" novalidate><h1>Welcome back</h1>
+  root.innerHTML = `<form class="stack auth-panel" id="lf" style="max-width:420px;margin:20px auto" novalidate><h1>Welcome back</h1>
     <div class="field"><label for="email">Email</label><input type="email" id="email" autocomplete="email" required></div>
     <div class="field"><label for="pw">Password</label><input type="password" id="pw" autocomplete="current-password" required></div>
     <div id="lerr"></div><button class="btn block" id="sub">Log in</button>
@@ -490,12 +485,12 @@ route('u', null, async ({ root, args }) => {
 // --- legal pages ---
 const LEGAL = {
   terms: ['Terms of Service', [
-    ['Eligibility', 'ClipVault is for adults aged 18 and over. You confirm you are 18+ when you register. We may suspend accounts we believe belong to minors.'],
+    ['Eligibility', 'VIDXX is for adults aged 18 and over. You confirm you are 18+ when you register. We may suspend accounts we believe belong to minors.'],
     ['Accounts', 'Choose one account type at sign-up: Curator (upload and earn) or Viewer (watch and unlock). Account type changes need admin approval. Keep your password safe; you are responsible for activity on your account.'],
     ['Points', 'Points are bought with real money through Paystack and spent to unlock videos. An unlocked video stays unlocked for your account. Points have no cash value and cannot be withdrawn or transferred. Purchases are non-refundable except where the law requires or where we made an error.'],
     ['Content', 'Curators must follow the Content Guidelines. We may approve, reject or remove content and suspend accounts at our discretion to keep the platform safe and lawful.'],
     ['Prohibited use', 'No fraud, fake views, bots, payment abuse, attempts to bypass the preview lock, or downloading and redistributing content.'],
-    ['Liability', 'The service is provided "as is". To the extent the law allows, ClipVault is not liable for indirect or consequential loss.'],
+    ['Liability', 'The service is provided "as is". To the extent the law allows, VIDXX is not liable for indirect or consequential loss.'],
     ['Changes', 'We may update these terms. Continued use after an update means you accept it.']]],
   privacy: ['Privacy Policy', [
     ['What we collect', 'Username, email, gender, profile picture, account type, payment records (via Paystack, we do not store card or M-Pesa PINs), viewing and unlock history, and basic technical logs.'],
