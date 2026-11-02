@@ -196,14 +196,54 @@ async function packagesSection(root) {
       </div>
       <button class="btn ghost block" id="pay-cancel" style="margin-top:10px">Cancel</button>`);
     $('#pay-cancel', box).onclick = closeModal;
-    $$('.pay-opt', box).forEach(o => o.onclick = async () => {
+    const hosted = async (method) => {
       $$('.pay-opt', box).forEach(x => x.disabled = true);
       try {
-        const r = await api('/payments/init', { method: 'POST', body: { package_id: p.id, method: o.dataset.m } });
+        const r = await api('/payments/init', { method: 'POST', body: { package_id: p.id, method } });
         sessionStorage.setItem('cv_ref', r.reference);
         location.href = r.authorization_url;
       } catch (e) { toast(e.message, true); $$('.pay-opt', box).forEach(x => x.disabled = false); }
-    });
+    };
+    const mpesaStep = () => {
+      box.innerHTML = `<h2 style="margin-top:0">Pay with M-Pesa</h2>
+        <p class="muted" style="margin-top:0">${esc(p.name)} · ${num(p.points)} points · ${kes(p.price_kes)}</p>
+        <div class="field"><label for="mp-phone">M-Pesa phone number</label><input type="tel" id="mp-phone" inputmode="tel" placeholder="0712 345 678" autocomplete="tel"><div class="hint">You'll get a prompt on this phone to enter your M-Pesa PIN.</div></div>
+        <div id="mp-err"></div>
+        <button class="btn block" id="mp-go">Send M-Pesa prompt</button>
+        <button class="btn ghost block" id="mp-back" style="margin-top:8px">Back</button>`;
+      $('#mp-back', box).onclick = () => { closeModal(); };
+      const saved = localStorage.getItem('cv_phone'); if (saved) $('#mp-phone', box).value = saved;
+      $('#mp-go', box).onclick = async () => {
+        const phone = $('#mp-phone', box).value.trim();
+        $('#mp-err', box).innerHTML = '';
+        busy($('#mp-go', box), true, 'Sending…');
+        try {
+          const r = await api('/payments/mpesa', { method: 'POST', body: { package_id: p.id, phone } });
+          try { localStorage.setItem('cv_phone', phone); } catch (_) {}
+          waitStep(r.reference, r.message);
+        } catch (e) { $('#mp-err', box).innerHTML = errBox(e.message); busy($('#mp-go', box), false); }
+      };
+    };
+    const waitStep = async (ref, msg) => {
+      box.innerHTML = `<div class="center stack"><div class="spin" role="status"></div><h2 style="margin:0">Check your phone</h2><p class="muted">${esc(msg)}<br>Enter your M-Pesa PIN to complete the payment. Don't close this window.</p></div>`;
+      let result = 'pending';
+      for (let i = 0; i < 40 && result === 'pending'; i++) {
+        await new Promise(r => setTimeout(r, 3000));
+        try { result = (await api('/payments/verify/' + encodeURIComponent(ref))).result; } catch (_) { /* keep trying */ }
+      }
+      if (result === 'credited' || result === 'already_credited') {
+        await loadMe(); renderTopRight();
+        box.innerHTML = `<div class="center stack"><h2 style="margin:0">Payment received</h2><p class="muted">${num(p.points)} points were added to your account.</p><button class="btn block" id="mp-done">Done</button></div>`;
+        $('#mp-done', box).onclick = () => { closeModal(); window.dispatchEvent(new HashChangeEvent('hashchange')); };
+      } else if (result === 'pending') {
+        box.innerHTML = `<div class="center stack"><h2 style="margin:0">Still waiting</h2><p class="muted">We haven't received the payment yet. If you already paid, your points will be added automatically within a few minutes.</p><button class="btn block" id="mp-done">Close</button></div>`;
+        $('#mp-done', box).onclick = () => { closeModal(); window.dispatchEvent(new HashChangeEvent('hashchange')); };
+      } else {
+        box.innerHTML = `<div class="center stack"><h2 style="margin:0">Payment not completed</h2><p class="muted">The M-Pesa payment was cancelled or failed. You have not been charged.</p><button class="btn block" id="mp-retry">Try again</button><button class="btn ghost block" id="mp-done">Close</button></div>`;
+        $('#mp-retry', box).onclick = mpesaStep; $('#mp-done', box).onclick = closeModal;
+      }
+    };
+    $$('.pay-opt', box).forEach(o => o.onclick = () => (o.dataset.m === 'mpesa' ? mpesaStep() : hosted(o.dataset.m)));
   });
 }
 
