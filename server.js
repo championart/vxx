@@ -395,8 +395,18 @@ app.post('/api/payments/init', auth, role('viewer'), wrap(async (req, res) => {
     callback_url: `${APP_URL || ''}/#/buy`,
     metadata: { user_id: req.profile.id, package: pkg.name, points: pkg.points }
   };
-  if (PAYSTACK_CHANNELS) body.channels = PAYSTACK_CHANNELS.split(',').map(s => s.trim()).filter(Boolean);
-  const r = await paystack('POST', '/transaction/initialize', body);
+  // The buyer picks how to pay; map it to Paystack channels. If an account doesn't have a channel
+  // enabled, fall back to fewer channels, then to Paystack's default list, rather than failing.
+  const CHANNELS = { mpesa: ['mobile_money'], card: ['card', 'apple_pay'], bank: ['bank', 'bank_transfer'] };
+  const envChans = PAYSTACK_CHANNELS ? PAYSTACK_CHANNELS.split(',').map(s => s.trim()).filter(Boolean) : null;
+  const chosen = CHANNELS[(req.body || {}).method] || envChans;
+  const attempts = chosen ? [chosen, chosen.slice(0, 1), null] : [null];
+  let r;
+  for (const ch of attempts) {
+    if (ch) body.channels = ch; else delete body.channels;
+    r = await paystack('POST', '/transaction/initialize', body);
+    if (r.status) break;
+  }
   if (!r.status) {
     await db.from('payments').update({ status: 'failed' }).eq('reference', reference);
     return res.status(502).json({ error: r.message || 'Could not start payment' });
