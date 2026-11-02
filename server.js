@@ -9,6 +9,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
+const { pipeline } = require('stream/promises');
+const { Readable } = require('stream');
 const { createClient } = require('@supabase/supabase-js');
 
 let ffmpegPath = null;
@@ -334,7 +336,10 @@ app.post('/api/videos/:id/play', auth, wrap(async (req, res) => {
   let url;
   if (v.preview_path) url = await signed('videos', v.preview_path, 3600);
   else if (ALLOW_UNSECURED_PREVIEW === 'true') url = await signed('videos', v.video_path, 3600);
-  else return res.status(503).json({ error: 'Preview is still being prepared. Try again shortly.' });
+  else {
+    generatePreview(v.id).catch(() => {}); // build it now if it is missing
+    return res.status(503).json({ error: 'Getting this video ready…' });
+  }
 
   // count one free preview per viewer per video per day (unique index absorbs repeats)
   const { error: ve } = await db.from('video_views').insert({ video_id: v.id, viewer_id: me.id, kind: 'preview' });
@@ -474,12 +479,14 @@ app.post('/api/videos', auth, role('curator'), wrap(async (req, res) => {
   const cat = CATEGORIES.includes(category) ? category : 'General';
   const { data: found } = await db.storage.from('videos').list(uid, { search: `${id}.mp4`, limit: 1 });
   if (!found || !found.length) return res.status(400).json({ error: 'Video file was not uploaded' });
+  const auto = Number((await getSettings()).auto_approve) === 1;
   const { error } = await db.from('videos').insert({
     id, owner_id: uid, title: t, description: String(description || '').slice(0, 2000), category: cat,
-    video_path, thumb_path
+    video_path, thumb_path, status: auto ? 'approved' : 'pending', approved_at: auto ? new Date().toISOString() : null
   });
   if (error) throw new Error(error.message);
-  generatePreview(id).catch(e => { console.error('preview error', e.message); }).then(() => maybeAutoApprove(id)).catch(e => console.error('auto-approve error', e.message));
+  if (auto) await audit(null, 'video_auto_approved', { id });
+  generatePreview(id).catch(e => console.error('preview error', e.message));
   res.json({ ok: true, id });
 }));
 
@@ -499,7 +506,6 @@ async function maybeAutoApprove(id) {
   if (Number(s.auto_approve) !== 1) return false;
   const { data: v } = await db.from('videos').select('status,preview_path').eq('id', id).maybeSingle();
   if (!v || v.status !== 'pending') return false;
-  if (!v.preview_path && ALLOW_UNSECURED_PREVIEW !== 'true') return false; // stays pending for an admin to handle
   await db.from('videos').update({ status: 'approved', approved_at: new Date().toISOString() }).eq('id', id);
   await audit(null, 'video_auto_approved', { id });
   return true;
@@ -512,31 +518,54 @@ async function removeVideoFiles(v) {
 }
 
 // Build a short, lower-resolution preview clip so the full file is never exposed before unlock.
-async function generatePreview(videoId) {
-  if (!ffmpegPath) { await audit(null, 'preview_skipped_no_ffmpeg', { videoId }); return false; }
-  const { data: v } = await db.from('videos').select('*').eq('id', videoId).single();
-  const s = await getSettings();
-  const secs = String(Number(s.preview_seconds) || 10);
-  const src = await signed('videos', v.video_path, 900);
-  const out = path.join(os.tmpdir(), `preview-${videoId}.mp4`);
-  await new Promise((resolve, reject) => {
-    const args = ['-y', '-i', src, '-t', secs, '-vf', 'scale=-2:min(480\\,ih)',
-      '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '28', '-c:a', 'aac', '-b:a', '96k',
-      '-movflags', '+faststart', out];
+const previewJobs = new Set();
+function runFfmpeg(args) {
+  return new Promise((resolve, reject) => {
     const p = spawn(ffmpegPath, args, { stdio: ['ignore', 'ignore', 'pipe'] });
     let err = '';
-    p.stderr.on('data', d => { err = (err + d).slice(-800); });
-    const timer = setTimeout(() => { p.kill('SIGKILL'); reject(new Error('ffmpeg timeout')); }, 180000);
-    p.on('close', code => { clearTimeout(timer); code === 0 ? resolve() : reject(new Error('ffmpeg exit ' + code + ': ' + err)); });
+    p.stderr.on('data', d => { err = (err + d).slice(-600); });
+    const timer = setTimeout(() => { p.kill('SIGKILL'); reject(new Error('ffmpeg timed out')); }, 240000);
+    p.on('close', code => { clearTimeout(timer); code === 0 ? resolve() : reject(new Error('ffmpeg exit ' + code + ': ' + err.replace(/\s+/g, ' ').slice(-300))); });
     p.on('error', e => { clearTimeout(timer); reject(e); });
-  }).catch(async e => { await audit(null, 'preview_failed', { videoId, error: String(e.message).slice(0, 300) }); throw e; });
-  const buf = fs.readFileSync(out);
-  fs.unlink(out, () => {});
-  const pPath = `${v.owner_id}/previews/${videoId}.mp4`;
-  const { error } = await db.storage.from('videos').upload(pPath, buf, { contentType: 'video/mp4', upsert: true });
-  if (error) throw new Error(error.message);
-  await db.from('videos').update({ preview_path: pPath }).eq('id', videoId);
-  return true;
+  });
+}
+
+// Builds the short free-preview clip. Downloads the file locally first (so ffmpeg needs no network),
+// then tries a fast stream-copy cut and falls back to a re-encode. Throws with a readable reason on failure.
+async function generatePreview(videoId) {
+  if (!ffmpegPath) { await audit(null, 'preview_failed', { videoId, error: 'ffmpeg is not installed on this server' }); throw new Error('ffmpeg is not installed on this server'); }
+  if (previewJobs.has(videoId)) return false;
+  previewJobs.add(videoId);
+  const tmpSrc = path.join(os.tmpdir(), `vx-${videoId}-src.mp4`);
+  const tmpOut = path.join(os.tmpdir(), `vx-${videoId}-prev.mp4`);
+  try {
+    const { data: v } = await db.from('videos').select('*').eq('id', videoId).single();
+    if (!v) throw new Error('Video not found');
+    const s = await getSettings();
+    const secs = String(Number(s.preview_seconds) || 10);
+    const res = await fetch(await signed('videos', v.video_path, 900));
+    if (!res.ok || !res.body) throw new Error('Could not read the uploaded video (' + res.status + ')');
+    await pipeline(Readable.fromWeb(res.body), fs.createWriteStream(tmpSrc));
+    try {
+      await runFfmpeg(['-y', '-i', tmpSrc, '-t', secs, '-c', 'copy', '-movflags', '+faststart', tmpOut]);
+      if (!fs.existsSync(tmpOut) || fs.statSync(tmpOut).size < 1000) throw new Error('empty copy');
+    } catch (_) {
+      await runFfmpeg(['-y', '-i', tmpSrc, '-t', secs, '-vf', "scale=-2:'if(gt(ih,480),480,trunc(ih/2)*2)',format=yuv420p",
+        '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '30', '-threads', '1', '-c:a', 'aac', '-b:a', '96k', '-movflags', '+faststart', tmpOut]);
+    }
+    const buf = fs.readFileSync(tmpOut);
+    const pPath = `${v.owner_id}/previews/${videoId}.mp4`;
+    const { error } = await db.storage.from('videos').upload(pPath, buf, { contentType: 'video/mp4', upsert: true });
+    if (error) throw new Error('Saving preview failed: ' + error.message);
+    await db.from('videos').update({ preview_path: pPath }).eq('id', videoId);
+    return true;
+  } catch (e) {
+    await audit(null, 'preview_failed', { videoId, error: String(e.message).slice(0, 400) });
+    throw e;
+  } finally {
+    previewJobs.delete(videoId);
+    fs.unlink(tmpSrc, () => {}); fs.unlink(tmpOut, () => {});
+  }
 }
 
 app.get('/api/creator/dashboard', auth, role('curator'), wrap(async (req, res) => {
@@ -650,18 +679,14 @@ app.post('/api/admin/videos/:id/review', ...admin, wrap(async (req, res) => {
   if (!['approve', 'reject'].includes(action)) return res.status(400).json({ error: 'Bad action' });
   const { data: v } = await db.from('videos').select('preview_path,status').eq('id', req.params.id).maybeSingle();
   if (!v || v.status === 'deleted') return res.status(404).json({ error: 'Not found' });
-  if (action === 'approve' && !v.preview_path && ALLOW_UNSECURED_PREVIEW !== 'true') {
-    return res.status(400).json({ error: 'Preview clip not ready yet. Use "Rebuild preview" and try again.' });
-  }
   await db.from('videos').update(action === 'approve' ? { status: 'approved', approved_at: new Date().toISOString() } : { status: 'rejected' }).eq('id', req.params.id);
   await audit(req.profile.id, 'video_' + action, { id: req.params.id });
   res.json({ ok: true });
 }));
 
 app.post('/api/admin/videos/:id/preview', ...admin, wrap(async (req, res) => {
-  const ok = await generatePreview(req.params.id);
-  if (ok) await maybeAutoApprove(req.params.id);
-  res.json({ ok });
+  try { const ok = await generatePreview(req.params.id); res.json({ ok: ok !== false, error: ok === false ? 'A preview is already being built, try again in a moment' : null }); }
+  catch (e) { res.json({ ok: false, error: e.message }); }
 }));
 
 app.put('/api/admin/videos/:id/price', ...admin, wrap(async (req, res) => {
@@ -777,8 +802,18 @@ async function expireVideos() {
     } catch (e) { console.error('expire failed for', v.id, e.message); }
   }
 }
-setInterval(() => expireVideos().catch(e => console.error('expireVideos', e.message)), 10 * 60 * 1000);
-setTimeout(() => expireVideos().catch(() => {}), 30000);
+async function sweepVideos() {
+  const s = await getSettings();
+  if (Number(s.auto_approve) === 1) {
+    await db.from('videos').update({ status: 'approved', approved_at: new Date().toISOString() }).eq('status', 'pending');
+  }
+  if (!ffmpegPath) return;
+  const { data } = await db.from('videos').select('id').eq('status', 'approved').is('preview_path', null).limit(2);
+  for (const v of data || []) { try { await generatePreview(v.id); } catch (e) { console.error('sweep preview', v.id, e.message); } }
+}
+const tick = () => expireVideos().catch(e => console.error('expireVideos', e.message)).then(() => sweepVideos()).catch(e => console.error('sweepVideos', e.message));
+setInterval(tick, 10 * 60 * 1000);
+setTimeout(tick, 20000);
 
 // Make sure the storage buckets exist (creates them if the SQL step missed them)
 async function ensureBuckets() {
