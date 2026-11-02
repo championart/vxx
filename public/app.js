@@ -183,13 +183,27 @@ async function packagesSection(root) {
       <span class="muted small">≈ ${Math.floor(p.points / d.unlock_price)} video unlocks</span>
     </button>`).join('')}</div>
     <p class="hint">Pay with M-Pesa, Visa/Mastercard, Apple Pay (where supported) or bank, securely through Paystack. Points are added only after the payment is verified.</p>` : '<div class="empty">No packages available right now.</div>';
-  $$('.btn-pkg', root).forEach(b => b.onclick = async () => {
-    b.disabled = true;
-    try {
-      const r = await api('/payments/init', { method: 'POST', body: { package_id: b.dataset.id } });
-      sessionStorage.setItem('cv_ref', r.reference);
-      location.href = r.authorization_url;
-    } catch (e) { toast(e.message, true); b.disabled = false; }
+  $$('.btn-pkg', root).forEach(b => b.onclick = () => {
+    const p = d.packages.find(x => x.id === b.dataset.id);
+    if (!p) return;
+    const box = modal(`<h2 style="margin-top:0">Buy ${esc(p.name)}</h2>
+      <p class="muted" style="margin-top:0">${num(p.points)} points · ${kes(p.price_kes)}</p>
+      <p style="font-weight:600;margin-bottom:8px">How do you want to pay?</p>
+      <div class="stack">
+        <button class="btn alt block pay-opt" data-m="mpesa" style="justify-content:flex-start;text-align:left"><span><b>M-Pesa</b><br><small class="muted">Get a payment prompt on your phone</small></span></button>
+        <button class="btn alt block pay-opt" data-m="card" style="justify-content:flex-start;text-align:left"><span><b>Card or Apple Pay</b><br><small class="muted">Visa, Mastercard, Apple Pay where supported</small></span></button>
+        <button class="btn alt block pay-opt" data-m="bank" style="justify-content:flex-start;text-align:left"><span><b>Bank</b><br><small class="muted">Pay from your bank account</small></span></button>
+      </div>
+      <button class="btn ghost block" id="pay-cancel" style="margin-top:10px">Cancel</button>`);
+    $('#pay-cancel', box).onclick = closeModal;
+    $$('.pay-opt', box).forEach(o => o.onclick = async () => {
+      $$('.pay-opt', box).forEach(x => x.disabled = true);
+      try {
+        const r = await api('/payments/init', { method: 'POST', body: { package_id: p.id, method: o.dataset.m } });
+        sessionStorage.setItem('cv_ref', r.reference);
+        location.href = r.authorization_url;
+      } catch (e) { toast(e.message, true); $$('.pay-opt', box).forEach(x => x.disabled = false); }
+    });
   });
 }
 
