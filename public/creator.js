@@ -73,14 +73,14 @@ const MAX_MB = 50;
 route('upload', ['curator'], async ({ root }) => {
   const cfg = await api('/config');
   root.innerHTML = `<form class="stack" id="uf" style="max-width:560px" novalidate><h1>Upload video</h1>
-    <div class="notice">Every video is reviewed by our team before it goes live. Adults only (18+), with consent from everyone shown. See the <a href="#/guidelines" target="_blank">content guidelines</a>.</div>
+    <div class="notice">Your video goes live automatically once it has been processed. Adults only (18+), with consent from everyone shown. Videos that break the rules are removed. See the <a href="#/guidelines" target="_blank">content guidelines</a>.</div>
     <div class="field"><label for="file">Video (MP4, up to ${MAX_MB} MB)</label><input type="file" id="file" accept="video/mp4"></div>
     <div class="field"><label for="thumb">Thumbnail image</label><input type="file" id="thumb" accept="image/jpeg,image/png,image/webp"><div id="tprev" style="margin-top:8px"></div></div>
     <div class="field"><label for="title">Title</label><input type="text" id="title" maxlength="100"></div>
     <div class="field"><label for="desc">Description</label><textarea id="desc" rows="3" maxlength="2000"></textarea></div>
     <div class="field"><label for="cat">Category</label><select id="cat">${cfg.categories.map(c => `<option>${esc(c)}</option>`).join('')}</select></div>
     <div id="uerr"></div><div id="ustat"></div>
-    <button class="btn block" id="usub">Upload &amp; submit for review</button></form>`;
+    <button class="btn block" id="usub">Upload video</button></form>`;
   let thumbBlob = null;
   $('#thumb').onchange = async e => {
     const f = e.target.files[0]; if (!f) return;
@@ -111,7 +111,7 @@ route('upload', ['curator'], async ({ root }) => {
       if (a.error) throw new Error('Video upload failed: ' + a.error.message);
       if (b.error) throw new Error('Thumbnail upload failed: ' + b.error.message);
       await api('/videos', { method: 'POST', body: { id: u.video_id, title, description: $('#desc').value, category: $('#cat').value, video_path: u.video.path, thumb_path: u.thumb.path } });
-      root.innerHTML = `<div class="card stack center" style="max-width:480px;margin:30px auto"><h1>Submitted for review</h1><p class="muted">We're preparing your preview clip. Your video goes live once an admin approves it.</p><div class="row" style="justify-content:center"><a class="btn" href="#/dashboard">Go to dashboard</a><a class="btn alt" href="#/upload">Upload another</a></div></div>`;
+      root.innerHTML = `<div class="card stack center" style="max-width:480px;margin:30px auto"><h1>Upload complete</h1><p class="muted">We're preparing your preview clip. Your video goes live in about a minute and shows as Approved on your dashboard.</p><div class="row" style="justify-content:center"><a class="btn" href="#/dashboard">Go to dashboard</a><a class="btn alt" href="#/upload">Upload another</a></div></div>`;
     } catch (er) { $('#ustat').innerHTML = ''; err(er.message); busy($('#usub'), false); }
   };
 });

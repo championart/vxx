@@ -334,6 +334,7 @@ route('video', null, async ({ root, args }) => {
     <div><h1>${esc(v.title)}</h1>
       <div class="row between"><a class="owner" href="#/u/${esc(v.owner && v.owner.username)}" style="margin:0">${avatarHtml(v.owner && v.owner.username, v.owner && v.owner.avatar)}<b style="color:var(--ink);font-size:.95rem">${esc(v.owner && v.owner.username)}</b></a>
       <span class="badge">${esc(v.category)}</span></div>
+      ${v.expires_at ? `<p class="small muted" style="margin:10px 0 0">Available until ${esc(dtime(v.expires_at))}</p>` : ''}
       ${v.description ? `<p style="margin-top:12px;white-space:pre-wrap">${esc(v.description)}</p>` : ''}
       ${me && me.account_type === 'viewer' ? '<button class="btn ghost sm" id="rep" style="padding-left:0">Report this video</button>' : ''}</div></div>`;
   const vid = $('#vid'), ov = $('#ov');
@@ -509,7 +510,7 @@ const LEGAL = {
     ['Adults only', 'Everyone appearing in content must be 18 or older and must have given clear consent to being filmed and published. We may ask for proof.'],
     ['Not allowed', 'Anyone under 18; non-consensual or secretly recorded content; violence, abuse, hate or harassment; illegal activity; content that infringes someone else\'s copyright or privacy.'],
     ['Your content', 'Upload only videos you own or have permission to share. Use accurate titles, descriptions and categories.'],
-    ['Moderation', 'Every video is reviewed before it goes live. Viewers can report videos. We remove content that breaks these rules and may suspend the account.'],
+    ['Moderation', 'Videos may go live automatically and are reviewed afterwards. Viewers can report videos. We remove content that breaks these rules and may suspend the account.'],
     ['Reporting', 'Use the "Report this video" button on any video page.']]]
 };
 Object.keys(LEGAL).forEach(k => route(k, null, ({ root }) => {

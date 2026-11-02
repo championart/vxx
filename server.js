@@ -192,6 +192,7 @@ app.post('/api/register', authLimiter, wrap(async (req, res) => {
     id: u.id, username, gender, account_type, avatar_url: avatarPath, is_adult_confirmed: true
   });
   if (pe) {
+    console.error('profile insert failed:', pe.code, pe.message);
     await db.auth.admin.deleteUser(u.id);
     return res.status(pe.code === '23505' ? 409 : 500).json({ error: pe.code === '23505' ? 'That username is taken' : 'Could not create profile' });
   }
@@ -306,7 +307,9 @@ app.get('/api/videos/:id', optionalAuth, wrap(async (req, res) => {
     const { data: u } = await db.from('video_unlocks').select('id').eq('viewer_id', me.id).eq('video_id', v.id).maybeSingle();
     unlocked = !!u;
   }
-  res.json({ ...videoCard(v, unlocked, Number(s.unlock_price_points)), description: v.description, status: v.status, preview_seconds: Number(s.preview_seconds) });
+  const life = Number(s.video_lifetime_hours) || 0;
+  const expires_at = life > 0 && v.status === 'approved' && v.approved_at ? new Date(new Date(v.approved_at).getTime() + life * 3600000).toISOString() : null;
+  res.json({ ...videoCard(v, unlocked, Number(s.unlock_price_points)), description: v.description, status: v.status, preview_seconds: Number(s.preview_seconds), expires_at });
 }));
 
 // Returns a signed playback URL: full file if unlocked/owner/admin, otherwise the short preview clip.
@@ -438,7 +441,7 @@ app.post('/api/videos', auth, role('curator'), wrap(async (req, res) => {
     video_path, thumb_path
   });
   if (error) throw new Error(error.message);
-  generatePreview(id).catch(e => console.error('preview error', e.message));
+  generatePreview(id).catch(e => { console.error('preview error', e.message); }).then(() => maybeAutoApprove(id)).catch(e => console.error('auto-approve error', e.message));
   res.json({ ok: true, id });
 }));
 
@@ -451,6 +454,18 @@ app.delete('/api/videos/:id', auth, wrap(async (req, res) => {
   await audit(req.profile.id, 'video_deleted', { id: v.id });
   res.json({ ok: true });
 }));
+
+// Publish a new video automatically once its preview clip is ready (admin setting auto_approve = 1).
+async function maybeAutoApprove(id) {
+  const s = await getSettings();
+  if (Number(s.auto_approve) !== 1) return false;
+  const { data: v } = await db.from('videos').select('status,preview_path').eq('id', id).maybeSingle();
+  if (!v || v.status !== 'pending') return false;
+  if (!v.preview_path && ALLOW_UNSECURED_PREVIEW !== 'true') return false; // stays pending for an admin to handle
+  await db.from('videos').update({ status: 'approved', approved_at: new Date().toISOString() }).eq('id', id);
+  await audit(null, 'video_auto_approved', { id });
+  return true;
+}
 
 async function removeVideoFiles(v) {
   const vids = [v.video_path, v.preview_path].filter(Boolean);
@@ -600,13 +615,14 @@ app.post('/api/admin/videos/:id/review', ...admin, wrap(async (req, res) => {
   if (action === 'approve' && !v.preview_path && ALLOW_UNSECURED_PREVIEW !== 'true') {
     return res.status(400).json({ error: 'Preview clip not ready yet. Use "Rebuild preview" and try again.' });
   }
-  await db.from('videos').update({ status: action === 'approve' ? 'approved' : 'rejected' }).eq('id', req.params.id);
+  await db.from('videos').update(action === 'approve' ? { status: 'approved', approved_at: new Date().toISOString() } : { status: 'rejected' }).eq('id', req.params.id);
   await audit(req.profile.id, 'video_' + action, { id: req.params.id });
   res.json({ ok: true });
 }));
 
 app.post('/api/admin/videos/:id/preview', ...admin, wrap(async (req, res) => {
   const ok = await generatePreview(req.params.id);
+  if (ok) await maybeAutoApprove(req.params.id);
   res.json({ ok });
 }));
 
@@ -619,14 +635,15 @@ app.put('/api/admin/videos/:id/price', ...admin, wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 
-const SETTING_KEYS = ['unlock_price_points', 'creator_rate_usd', 'min_withdrawal_usd', 'preview_seconds', 'usd_to_kes'];
+const SETTING_KEYS = ['unlock_price_points', 'creator_rate_usd', 'min_withdrawal_usd', 'preview_seconds', 'usd_to_kes', 'video_lifetime_hours', 'auto_approve'];
 app.get('/api/admin/settings', ...admin, wrap(async (req, res) => res.json(await getSettings())));
 app.put('/api/admin/settings', ...admin, wrap(async (req, res) => {
   const body = req.body || {};
   for (const k of SETTING_KEYS) {
     if (body[k] === undefined) continue;
     const n = Number(body[k]);
-    if (!(n > 0)) return res.status(400).json({ error: `${k} must be a positive number` });
+    const zeroOk = k === 'video_lifetime_hours' || k === 'auto_approve';
+    if (zeroOk ? !(n >= 0) : !(n > 0)) return res.status(400).json({ error: `${k} must be ${zeroOk ? 'zero or a positive number' : 'a positive number'}` });
     await db.from('settings').upsert({ key: k, value: String(n), updated_at: new Date().toISOString() });
   }
   await audit(req.profile.id, 'settings_changed', body);
@@ -703,6 +720,28 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'Something went wrong. Please try again.' });
 });
 
+// Auto-delete videos a set number of hours after they go live (admin setting video_lifetime_hours, 0 = off).
+// Files are removed to free storage; the DB row is kept (status 'deleted') so earnings and stats stay intact.
+async function expireVideos() {
+  const s = await getSettings();
+  const life = Number(s.video_lifetime_hours) || 0;
+  if (life <= 0) return;
+  const cutoff = new Date(Date.now() - life * 3600000).toISOString();
+  const { data, error } = await db.from('videos').select('*').in('status', ['approved', 'rejected']).lt('approved_at', cutoff).limit(50);
+  if (error) { console.error('expire query failed:', error.message); return; }
+  // rejected videos never got approved_at: expire them from upload time
+  const { data: rej } = await db.from('videos').select('*').eq('status', 'rejected').is('approved_at', null).lt('created_at', cutoff).limit(50);
+  for (const v of [...(data || []), ...(rej || [])]) {
+    try {
+      await removeVideoFiles(v);
+      await db.from('videos').update({ status: 'deleted' }).eq('id', v.id);
+      await audit(null, 'video_expired', { id: v.id, lifetime_hours: life });
+    } catch (e) { console.error('expire failed for', v.id, e.message); }
+  }
+}
+setInterval(() => expireVideos().catch(e => console.error('expireVideos', e.message)), 10 * 60 * 1000);
+setTimeout(() => expireVideos().catch(() => {}), 30000);
+
 // Make sure the storage buckets exist (creates them if the SQL step missed them)
 async function ensureBuckets() {
   const want = [['videos', false], ['thumbs', true], ['avatars', true]];
@@ -715,6 +754,7 @@ async function ensureBuckets() {
     console.log(r.error ? `Could not create bucket ${name}: ${r.error.message}` : `Created storage bucket: ${name}`);
   }
 }
+db.from('profiles').select('id', { head: true, count: 'exact' }).then(r => { if (r.error) console.error('DATABASE NOT READY: run supabase/schema.sql in the Supabase SQL Editor. (' + r.error.message + ')'); });
 ensureBuckets().catch(e => console.error('ensureBuckets', e.message));
 
 app.listen(PORT, () => console.log(`VIDXX running on port ${PORT}`));

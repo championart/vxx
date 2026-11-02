@@ -101,6 +101,8 @@ const views = {
       <div class="field"><label>Creator earning per qualified paid unlock (USD)</label><input type="number" step="0.0001" min="0" id="s2" value="${esc(s.creator_rate_usd)}"></div>
       <div class="field"><label>Minimum withdrawal (USD)</label><input type="number" step="0.01" min="0" id="s3" value="${esc(s.min_withdrawal_usd)}"></div>
       <div class="field"><label>Free preview length (seconds)</label><input type="number" min="1" id="s4" value="${esc(s.preview_seconds)}"><div class="hint">Applies to newly generated preview clips.</div></div>
+      <div class="field"><label>New videos</label><select id="s7"><option value="1" ${Number(s.auto_approve) === 1 ? 'selected' : ''}>Go live automatically</option><option value="0" ${Number(s.auto_approve) === 1 ? '' : 'selected'}>Wait for my approval</option></select><div class="hint">Automatic videos go live as soon as their preview clip is ready (about a minute). You can still reject or delete any video.</div></div>
+      <div class="field"><label>Videos auto-delete after (hours)</label><input type="number" min="0" id="s6" value="${esc(s.video_lifetime_hours || 0)}"><div class="hint">Counted from when you approve a video. 0 = never delete. Deleted videos free your storage and can't be watched again.</div></div>
       <div class="field"><label>USD → KES rate (for payouts)</label><input type="number" step="0.01" min="1" id="s5" value="${esc(s.usd_to_kes)}"></div>
       <button class="btn">Save settings</button></form>
       <div class="card"><h2 style="margin-top:0">Points packages</h2>
@@ -109,7 +111,7 @@ const views = {
         <form class="row" id="nf" style="margin-top:12px"><input type="text" id="nn" placeholder="Name" style="width:120px"><input type="number" id="np" placeholder="Points" style="width:110px"><input type="number" id="nc" placeholder="Price KES" style="width:110px"><button class="btn sm">Add package</button></form></div></div>`;
     $('#sf').onsubmit = async e => {
       e.preventDefault();
-      try { await api('/admin/settings', { method: 'PUT', body: { unlock_price_points: $('#s1').value, creator_rate_usd: $('#s2').value, min_withdrawal_usd: $('#s3').value, preview_seconds: $('#s4').value, usd_to_kes: $('#s5').value } }); toast('Settings saved'); }
+      try { await api('/admin/settings', { method: 'PUT', body: { unlock_price_points: $('#s1').value, creator_rate_usd: $('#s2').value, min_withdrawal_usd: $('#s3').value, preview_seconds: $('#s4').value, usd_to_kes: $('#s5').value, video_lifetime_hours: $('#s6').value, auto_approve: $('#s7').value } }); toast('Settings saved'); }
       catch (er) { toast(er.message, true); }
     };
     $$('.ps', el).forEach(b => b.onclick = async () => {

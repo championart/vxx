@@ -15,7 +15,9 @@ insert into settings (key, value) values
   ('creator_rate_usd', '0.001'),          -- creator earning per qualified paid unlock
   ('min_withdrawal_usd', '5'),            -- minimum withdrawal
   ('preview_seconds', '10'),
-  ('usd_to_kes', '129')                   -- used to show withdrawals in KES
+  ('usd_to_kes', '129'),                  -- used to show withdrawals in KES
+  ('video_lifetime_hours', '24'),         -- videos auto-delete this many hours after going live (0 = keep forever)
+  ('auto_approve', '1')                   -- 1 = videos go live automatically once their preview is ready
 on conflict (key) do nothing;
 
 -- ---------- profiles ----------
@@ -44,8 +46,10 @@ create table if not exists videos (
   preview_path text,                   -- optional short clip in private bucket
   price_points int,                    -- null = use default setting
   status text not null default 'pending' check (status in ('pending','approved','rejected','deleted')),
+  approved_at timestamptz,
   created_at timestamptz not null default now()
 );
+alter table videos add column if not exists approved_at timestamptz;
 create index if not exists videos_status_created on videos (status, created_at desc);
 create index if not exists videos_owner on videos (owner_id);
 
