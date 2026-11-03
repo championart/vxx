@@ -1,7 +1,7 @@
 /* Curator pages: dashboard, upload, withdraw */
 (() => {
 'use strict';
-const { S, api, route, esc, num, usd, kes, date, dtime, toast, modal, closeModal, loading, errBox, busy, resizeImage, go, loadMe, renderTopRight, $, $$ } = window.CV;
+const { shareVideo, S, api, route, esc, num, usd, kes, date, dtime, toast, modal, closeModal, loading, errBox, busy, resizeImage, go, loadMe, renderTopRight, $, $$ } = window.CV;
 
 const statusBadge = s => `<span class="badge ${esc(s)}">${esc(s)}</span>`;
 
@@ -24,7 +24,7 @@ route('dashboard', ['curator'], async ({ root }) => {
       <div id="rep">${loading}</div></div>
     <h2 style="margin-bottom:0">Your videos</h2>
     ${d.videos.length ? `<div class="tablewrap"><table><thead><tr><th>Video</th><th>Status</th><th>Previews</th><th>Paid unlocks</th><th>Earned</th><th></th></tr></thead><tbody>
-      ${d.videos.map(v => `<tr><td class="wrap"><a href="#/video/${esc(v.id)}"><b>${esc(v.title)}</b></a><div class="small muted">${date(v.created_at)}</div></td><td>${statusBadge(v.status)}</td><td>${num(v.previews)}</td><td>${num(v.paid)}</td><td>${usd(v.earned)}</td><td><button class="btn alt sm del" data-id="${esc(v.id)}">Delete</button></td></tr>`).join('')}</tbody></table></div>`
+      ${d.videos.map(v => `<tr><td class="wrap"><a href="#/video/${esc(v.id)}"><b>${esc(v.title)}</b></a><div class="small muted">${date(v.created_at)}</div></td><td>${statusBadge(v.status)}</td><td>${num(v.previews)}</td><td>${num(v.paid)}</td><td>${usd(v.earned)}</td><td><div class="row" style="gap:6px;flex-wrap:nowrap">${v.status === 'approved' ? `<button class="btn alt sm shr" data-id="${esc(v.id)}" data-t="${esc(v.title)}">Share</button>` : ''}<button class="btn alt sm del" data-id="${esc(v.id)}">Delete</button></div></td></tr>`).join('')}</tbody></table></div>`
       : '<div class="empty">You haven\'t uploaded anything yet. <a href="#/upload">Upload your first video</a>.</div>'}
     </div>`;
   const loadReport = async p => {
@@ -45,6 +45,7 @@ route('dashboard', ['curator'], async ({ root }) => {
     loadReport(b.dataset.p);
   };
   loadReport('day');
+  $$('.shr', root).forEach(b => b.onclick = () => shareVideo({ id: b.dataset.id, title: b.dataset.t }));
   $$('.del', root).forEach(b => b.onclick = () => {
     const box = modal('<h2 style="margin-top:0">Delete this video?</h2><p class="muted">The video files are removed permanently. Earnings already credited stay in your balance.</p><div class="row"><button class="btn bad" id="y">Delete</button><button class="btn alt" id="n">Cancel</button></div>');
     $('#n', box).onclick = closeModal;

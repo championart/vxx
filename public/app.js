@@ -100,6 +100,37 @@ function resizeImage(file, w, h, type = 'image/jpeg', q = 0.85) {
   });
 }
 
+// ---------- sharing ----------
+const shareBase = () => (CFG.API || location.origin).replace(/\/$/, '');
+async function shareLink({ title, text, url }) {
+  if (navigator.share) {
+    try { await navigator.share({ title, text, url }); return; }
+    catch (e) { if (e && e.name === 'AbortError') return; /* otherwise fall through to the menu */ }
+  }
+  const enc = encodeURIComponent;
+  const msg = `${text} ${url}`;
+  const box = modal(`<h2 style="margin-top:0">Share</h2>
+    <p class="muted" style="margin-top:0">${esc(title)}</p>
+    <div class="row" style="flex-wrap:nowrap"><input type="text" id="sh-link" readonly value="${esc(url)}" aria-label="Link"><button class="btn sm" id="sh-copy">Copy</button></div>
+    <div class="grid" style="grid-template-columns:repeat(2,1fr);margin-top:14px">
+      <a class="btn alt" target="_blank" rel="noopener" href="https://wa.me/?text=${enc(msg)}">WhatsApp</a>
+      <a class="btn alt" target="_blank" rel="noopener" href="https://t.me/share/url?url=${enc(url)}&text=${enc(text)}">Telegram</a>
+      <a class="btn alt" target="_blank" rel="noopener" href="https://www.facebook.com/sharer/sharer.php?u=${enc(url)}">Facebook</a>
+      <a class="btn alt" target="_blank" rel="noopener" href="https://twitter.com/intent/tweet?text=${enc(text)}&url=${enc(url)}">X</a>
+      <a class="btn alt" href="mailto:?subject=${enc(title)}&body=${enc(msg)}">Email</a>
+      <a class="btn alt" href="sms:?&body=${enc(msg)}">SMS</a></div>
+    <button class="btn ghost block" id="sh-close" style="margin-top:10px">Close</button>`);
+  $('#sh-close', box).onclick = closeModal;
+  const input = $('#sh-link', box);
+  input.onfocus = () => input.select();
+  $('#sh-copy', box).onclick = async () => {
+    try { await navigator.clipboard.writeText(url); toast('Link copied'); }
+    catch (_) { input.select(); document.execCommand && document.execCommand('copy'); toast('Link copied'); }
+  };
+}
+const shareVideo = v => shareLink({ title: v.title, text: `Watch "${v.title}" on VIDXX`, url: `${shareBase()}/v/${encodeURIComponent(v.id)}` });
+const shareProfile = u => shareLink({ title: `${u} on VIDXX`, text: `Check out ${u} on VIDXX`, url: `${shareBase()}/u/${encodeURIComponent(u)}` });
+
 // ---------- router ----------
 const routes = {};
 function route(name, roles, handler) { routes[name] = { roles, handler }; }
@@ -387,10 +418,11 @@ route('video', null, async ({ root, args }) => {
       <div class="overlay" id="ov" hidden></div></div>
     <div><h1>${esc(v.title)}</h1>
       <div class="row between"><a class="owner" href="#/u/${esc(v.owner && v.owner.username)}" style="margin:0">${avatarHtml(v.owner && v.owner.username, v.owner && v.owner.avatar)}<b style="color:var(--ink);font-size:.95rem">${esc(v.owner && v.owner.username)}</b></a>
-      <span class="badge">${esc(v.category)}</span></div>
+      <div class="row" style="gap:8px"><span class="badge">${esc(v.category)}</span><button class="btn alt sm" id="share">Share</button></div></div>
       ${v.expires_at ? `<p class="small muted" style="margin:10px 0 0">Available until ${esc(dtime(v.expires_at))}</p>` : ''}
       ${v.description ? `<p style="margin-top:12px;white-space:pre-wrap">${esc(v.description)}</p>` : ''}
       ${me && me.account_type === 'viewer' ? '<button class="btn ghost sm" id="rep" style="padding-left:0">Report this video</button>' : ''}</div></div>`;
+  $('#share').onclick = () => shareVideo(v);
   const vid = $('#vid'), ov = $('#ov');
   vid.oncontextmenu = e => e.preventDefault();
   const setOv = html => { ov.innerHTML = html; ov.hidden = false; };
@@ -493,10 +525,11 @@ route('profile', 'auth', async ({ root }) => {
       <div style="min-width:0"><h1 style="margin:0">${esc(me.username)}</h1>
       <div class="row" style="gap:6px;margin:6px 0"><span class="badge" style="text-transform:capitalize">${esc(me.account_type)}</span><span class="badge" style="text-transform:capitalize">${esc(me.gender)}</span></div>
       <div class="small muted">Joined ${date(me.created_at)} · ${esc(me.email)}</div>
-      <label class="btn alt sm" style="margin-top:8px;cursor:pointer">Change photo<input type="file" id="newav" accept="image/jpeg,image/png,image/webp" hidden></label></div></div>
+      <label class="btn alt sm" style="margin-top:8px;cursor:pointer">Change photo<input type="file" id="newav" accept="image/jpeg,image/png,image/webp" hidden></label> <button class="btn alt sm" id="shareme" style="margin-top:8px">Share profile</button></div></div>
     <div id="role-sections"></div>
     <div class="small muted">Account type can only be changed by an admin. <button class="btn alt sm" id="lo" style="margin-left:6px">Log out</button></div></div>`;
   $('#lo').onclick = () => logout();
+  $('#shareme').onclick = () => shareProfile(me.username);
   $('#newav').onchange = async e => {
     const f = e.target.files[0]; if (!f) return;
     try {
@@ -538,9 +571,10 @@ route('u', null, async ({ root, args }) => {
   root.innerHTML = `<div class="stack"><div class="card row" style="flex-wrap:nowrap;gap:16px">${avatarHtml(d.username, d.avatar, 'lg')}
     <div><h1 style="margin:0">${esc(d.username)}</h1>
     <div class="row" style="gap:6px;margin:6px 0"><span class="badge" style="text-transform:capitalize">${esc(d.account_type)}</span><span class="badge" style="text-transform:capitalize">${esc(d.gender)}</span></div>
-    <div class="small muted">Joined ${date(d.created_at)}</div></div></div>
+    <div class="small muted">Joined ${date(d.created_at)}</div><button class="btn alt sm" id="sharepub" style="margin-top:8px">Share profile</button></div></div>
     ${d.account_type === 'curator' ? `<div class="stats"><div class="stat"><span>Published videos</span><b>${num((d.videos || []).length)}</b></div><div class="stat"><span>Total views</span><b>${num(d.total_views)}</b></div></div>
     <h2>Videos</h2>${(d.videos || []).length ? `<div class="grid">${d.videos.map(x => `<a class="vcard" href="#/video/${esc(x.id)}"><div class="th">${x.thumb ? `<img src="${esc(x.thumb)}" alt="" loading="lazy">` : ''}</div><div class="bd"><div class="t">${esc(x.title)}</div></div></a>`).join('')}</div>` : '<div class="empty">No videos yet.</div>'}` : ''}</div>`;
+  $('#sharepub').onclick = () => shareProfile(d.username);
 });
 
 // --- legal pages ---
@@ -579,7 +613,7 @@ Object.keys(LEGAL).forEach(k => route(k, null, ({ root }) => {
 }));
 
 // ---------- expose for creator.js / admin.js ----------
-window.CV = { S, api, route, esc, num, usd, kes, date, dtime, toast, modal, closeModal, loading, errBox, avatarHtml, icon, busy, resizeImage, videoCard, go, loadMe, renderTopRight, $, $$, parseHash };
+window.CV = { shareVideo, shareProfile, S, api, route, esc, num, usd, kes, date, dtime, toast, modal, closeModal, loading, errBox, avatarHtml, icon, busy, resizeImage, videoCard, go, loadMe, renderTopRight, $, $$, parseHash };
 
 // ---------- boot ----------
 window.addEventListener('hashchange', render);

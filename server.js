@@ -777,6 +777,49 @@ app.get('/api/admin/audit', ...admin, wrap(async (req, res) => {
   res.json({ log: data || [] });
 }));
 
+// ---------- share links with rich previews (WhatsApp, Facebook, X, Telegram read these tags) ----------
+const escHtml = x => String(x == null ? '' : x).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+function sharePage(req, { title, desc, image, hash }) {
+  const origin = `${req.protocol}://${req.get('host')}`;
+  const front = (APP_URL || origin).replace(/\/$/, '');
+  const target = `${front}/#/${hash}`;
+  const self = `${origin}${req.originalUrl}`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${escHtml(title)}</title><meta name="description" content="${escHtml(desc)}">
+<meta property="og:site_name" content="VIDXX"><meta property="og:type" content="website"><meta property="og:title" content="${escHtml(title)}">
+<meta property="og:description" content="${escHtml(desc)}"><meta property="og:url" content="${escHtml(self)}">
+${image ? `<meta property="og:image" content="${escHtml(image)}"><meta name="twitter:card" content="summary_large_image"><meta name="twitter:image" content="${escHtml(image)}">` : '<meta name="twitter:card" content="summary">'}
+<meta name="twitter:title" content="${escHtml(title)}"><meta name="twitter:description" content="${escHtml(desc)}">
+<meta http-equiv="refresh" content="0;url=${escHtml(target)}"><style>body{background:#0b0b0e;color:#f5f5f7;font:16px system-ui;display:grid;place-items:center;height:100vh;margin:0}a{color:#ff4d57}</style></head>
+<body><p>Opening VIDXX… <a href="${escHtml(target)}">Tap here if nothing happens</a></p><script>location.replace(${JSON.stringify(target)})</script></body></html>`;
+}
+app.get('/v/:id', wrap(async (req, res) => {
+  let page = { title: 'VIDXX', desc: 'Watch a free preview and unlock with points.', image: null, hash: 'video/' + encodeURIComponent(req.params.id) };
+  try {
+    if (/^[0-9a-f-]{36}$/.test(req.params.id)) {
+      const v = await getApprovedVideo(req.params.id);
+      if (v && v.status === 'approved') {
+        page.title = `${v.title} · VIDXX`;
+        page.desc = (v.description || `Watch ${v.owner ? v.owner.username + "'s" : 'this'} video on VIDXX. The first 10 seconds are free.`).slice(0, 180);
+        page.image = publicUrl('thumbs', v.thumb_path);
+      }
+    }
+  } catch (_) { /* fall back to the generic card */ }
+  res.set('Cache-Control', 'public, max-age=300').type('html').send(sharePage(req, page));
+}));
+app.get('/u/:username', wrap(async (req, res) => {
+  let page = { title: 'VIDXX', desc: 'Watch, unlock and earn on VIDXX.', image: null, hash: 'u/' + encodeURIComponent(req.params.username) };
+  try {
+    const { data: p } = await db.from('profiles').select('username,account_type,avatar_url,status').ilike('username', req.params.username).maybeSingle();
+    if (p && p.status === 'active') {
+      page.title = `${p.username} on VIDXX`;
+      page.desc = p.account_type === 'curator' ? `Watch ${p.username}'s videos on VIDXX. The first 10 seconds are free.` : `${p.username} is on VIDXX.`;
+      page.image = p.avatar_url ? publicUrl('avatars', p.avatar_url) : null;
+    }
+  } catch (_) { /* generic card */ }
+  res.set('Cache-Control', 'public, max-age=300').type('html').send(sharePage(req, page));
+}));
+
 // ---------- static frontend ----------
 app.use(express.static(path.join(__dirname, 'public'), { maxAge: '1h' }));
 app.use('/api', (req, res) => res.status(404).json({ error: 'Not found' }));
