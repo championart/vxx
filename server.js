@@ -54,6 +54,7 @@ async function getSettings() {
   (data || []).forEach(r => { o[r.key] = r.value; });
   return o;
 }
+const autoOn = s => s.auto_approve === undefined || Number(s.auto_approve) === 1; // default: videos go live automatically
 async function audit(actor, action, detail) {
   await db.from('audit_log').insert({ actor_id: actor || null, action, detail: detail || null });
 }
@@ -479,12 +480,15 @@ app.post('/api/videos', auth, role('curator'), wrap(async (req, res) => {
   const cat = CATEGORIES.includes(category) ? category : 'General';
   const { data: found } = await db.storage.from('videos').list(uid, { search: `${id}.mp4`, limit: 1 });
   if (!found || !found.length) return res.status(400).json({ error: 'Video file was not uploaded' });
-  const auto = Number((await getSettings()).auto_approve) === 1;
+  const auto = autoOn(await getSettings());
   const { error } = await db.from('videos').insert({
     id, owner_id: uid, title: t, description: String(description || '').slice(0, 2000), category: cat,
     video_path, thumb_path, status: auto ? 'approved' : 'pending', approved_at: auto ? new Date().toISOString() : null
   });
-  if (error) throw new Error(error.message);
+  if (error) {
+    console.error('video insert failed:', error.code, error.message);
+    return res.status(500).json({ error: 'Could not save the video: ' + error.message + (/approved_at/.test(error.message) ? ' (run the latest supabase/schema.sql in the Supabase SQL Editor)' : '') });
+  }
   if (auto) await audit(null, 'video_auto_approved', { id });
   generatePreview(id).catch(e => console.error('preview error', e.message));
   res.json({ ok: true, id });
@@ -503,7 +507,7 @@ app.delete('/api/videos/:id', auth, wrap(async (req, res) => {
 // Publish a new video automatically once its preview clip is ready (admin setting auto_approve = 1).
 async function maybeAutoApprove(id) {
   const s = await getSettings();
-  if (Number(s.auto_approve) !== 1) return false;
+  if (!autoOn(s)) return false;
   const { data: v } = await db.from('videos').select('status,preview_path').eq('id', id).maybeSingle();
   if (!v || v.status !== 'pending') return false;
   await db.from('videos').update({ status: 'approved', approved_at: new Date().toISOString() }).eq('id', id);
@@ -804,7 +808,7 @@ async function expireVideos() {
 }
 async function sweepVideos() {
   const s = await getSettings();
-  if (Number(s.auto_approve) === 1) {
+  if (autoOn(s)) {
     await db.from('videos').update({ status: 'approved', approved_at: new Date().toISOString() }).eq('status', 'pending');
   }
   if (!ffmpegPath) return;
