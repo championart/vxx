@@ -146,3 +146,34 @@ body.bd #bottom-nav{background:rgba(11,11,14,.82);backdrop-filter:blur(10px)}
 .hero h1::first-line{color:#fff}
 .hero p{color:#d6d6e0;text-shadow:0 1px 12px rgba(0,0,0,.6)}
 .auth-panel{background:rgba(14,14,18,.78);backdrop-filter:blur(12px);border:1px solid rgba(255,255,255,.10);border-radius:18px;padding:22px;box-shadow:0 20px 60px rgba(0,0,0,.55)}
+
+/* ---- comments, live, messages ---- */
+.dot{display:inline-grid;place-items:center;min-width:18px;height:18px;padding:0 5px;border-radius:99px;background:var(--accent);color:#fff;font-size:.68rem;font-weight:800;margin-left:6px}
+#bottom-nav a{position:relative}
+#bottom-nav a .dot{position:absolute;top:6px;left:calc(50% + 6px);margin:0}
+.live-th{display:grid;place-items:center;background:radial-gradient(circle at 50% 40%,#3a0a10,#0b0b0e)!important}
+.tag.live{top:8px;bottom:auto;background:var(--accent)}
+.tag.right{left:auto;right:8px}
+#media{position:absolute;inset:0}
+.live-video{width:100%;height:100%;object-fit:contain;background:#000;display:block}
+.live-bar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:10px 14px;background:var(--surface);border:1px solid var(--line);border-radius:12px}
+.live-bar[hidden]{display:none}
+.live-dot{color:var(--accent);font-weight:800;font-size:.85rem}
+.cm-list{max-height:380px;overflow-y:auto;display:flex;flex-direction:column;gap:12px;padding:4px 2px 10px}
+.cm-live .cm-list{height:300px;max-height:none;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:10px}
+.cm-item{display:flex;gap:10px;align-items:flex-start}
+.cm-item .avatar{width:30px;height:30px;font-size:.8rem}
+.cm-body{flex:1;min-width:0;font-size:.9rem}
+.cm-text{word-break:break-word}
+.cm-del{padding:2px 8px}
+.cm-form{display:flex;gap:8px;margin-top:10px}
+.cm-empty{padding:16px 0;text-align:center}
+.msg-row{display:flex;gap:12px;align-items:center;color:inherit;margin-bottom:8px;padding:12px}
+.msg-last{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.thread .msg-list{display:flex;flex-direction:column;gap:8px;height:55vh;min-height:260px;overflow-y:auto;padding:12px;background:var(--surface);border:1px solid var(--line);border-radius:14px}
+.bubble{max-width:80%;align-self:flex-start;background:var(--surface-2);border-radius:14px 14px 14px 4px;padding:8px 12px;word-break:break-word;white-space:pre-wrap}
+.bubble.mine{align-self:flex-end;background:var(--accent);color:#fff;border-radius:14px 14px 4px 14px}
+.bmeta{font-size:.7rem;opacity:.7;margin-top:2px}
+@media(min-width:900px){.cm-live .cm-list{height:340px}}
+/* taller player box on phones so the lock / join panels are never clipped */
+@media(max-width:619px){.player{aspect-ratio:auto;min-height:300px}}

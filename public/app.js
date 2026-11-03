@@ -24,12 +24,14 @@ const ICONS = {
   upload: '<path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 16v4h16v-4"/>',
   cash: '<rect x="3" y="6" width="18" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/>',
   shield: '<path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/>',
-  lock: '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/>'
+  lock: '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/>',
+  live: '<rect x="3" y="6" width="13" height="12" rx="2"/><path d="M16 10l5-3v10l-5-3z"/>',
+  chat: '<path d="M4 5h16v11H9l-5 4z"/>'
 };
 const icon = (n, cls = '') => `<svg class="i ${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[n] || ''}</svg>`;
 
 // ---------- state ----------
-const S = { me: null, config: null };
+const S = { me: null, config: null, unread: 0 };
 const tok = {
   get a() { return localStorage.getItem('cv_at'); }, get r() { return localStorage.getItem('cv_rt'); },
   set(a, r) { localStorage.setItem('cv_at', a); localStorage.setItem('cv_rt', r); },
@@ -165,14 +167,14 @@ async function render() {
 function navItems() {
   const t = S.me && S.me.account_type;
   if (!S.me) return [['', 'Home', 'home'], ['explore', 'Explore', 'compass'], ['login', 'Log in', 'user'], ['register', 'Join', 'plus']];
-  if (t === 'viewer') return [['explore', 'Explore', 'compass'], ['buy', 'Buy Points', 'coin'], ['profile', 'Profile', 'user']];
-  if (t === 'curator') return [['dashboard', 'Dashboard', 'chart'], ['upload', 'Upload', 'upload'], ['withdraw', 'Withdraw', 'cash'], ['profile', 'Profile', 'user']];
+  if (t === 'viewer') return [['explore', 'Explore', 'compass'], ['buy', 'Buy Points', 'coin'], ['messages', 'Messages', 'chat'], ['profile', 'Profile', 'user']];
+  if (t === 'curator') return [['dashboard', 'Dashboard', 'chart'], ['golive', 'Go Live', 'live'], ['upload', 'Upload', 'upload'], ['messages', 'Messages', 'chat'], ['profile', 'Profile', 'user']];
   return [['admin', 'Admin', 'shield'], ['explore', 'Videos', 'compass'], ['profile', 'Profile', 'user']];
 }
 function updateNav() {
   const cur = parseHash().name;
   const items = navItems();
-  const link = ([h, label, ic]) => `<a href="#/${h}" class="${cur === h ? 'on' : ''}" ${cur === h ? 'aria-current="page"' : ''}>${icon(ic)}<span>${label}</span></a>`;
+  const link = ([h, label, ic]) => `<a href="#/${h}" class="${cur === h ? 'on' : ''}" ${cur === h ? 'aria-current="page"' : ''}>${icon(ic)}<span>${label}</span>${h === 'messages' && S.unread ? `<b class="dot">${S.unread > 9 ? '9+' : S.unread}</b>` : ''}</a>`;
   $('#side-nav').innerHTML = items.map(link).join('');
   $('#bottom-nav').innerHTML = items.map(link).join('');
   $('#side-foot').innerHTML = S.me ? `<div class="row" style="flex-wrap:nowrap">${avatarHtml(S.me.username, S.me.avatar)}<div><b>${esc(S.me.username)}</b><div class="small muted" style="text-transform:capitalize">${esc(S.me.account_type)}</div></div></div><button class="btn alt sm block" id="logout-side" style="margin-top:10px">Log out</button>` : '';
@@ -376,35 +378,47 @@ route('login', null, ({ root }) => {
 });
 
 // --- explore ---
-route('explore', null, async ({ root }) => {
-  if (S.me && S.me.account_type === 'curator') { root.innerHTML = `<div class="notice warn">Curators can't browse other creators' videos. Manage your own videos from the <a href="#/dashboard">dashboard</a>.</div>`; return; }
-  if (!S.config) S.config = await api('/config');
-  const st = { q: '', category: '', page: 1 };
+route('explore', null, async ({ root, query }) => {
+  if (S.me && S.me.account_type === 'curator') { root.innerHTML = `<div class="notice warn">Curators can't browse other creators' videos or live streams. Manage your content from the <a href="#/dashboard">dashboard</a> or <a href="#/golive">go live</a>.</div>`; return; }
+  let tab = query.tab === 'live' ? 'live' : 'videos';
   root.innerHTML = `<h1>Explore</h1>
-    <input type="search" id="q" placeholder="Search videos" aria-label="Search videos" style="margin-bottom:8px">
-    <div class="chips" id="cats"><button class="chip on" data-c="">All</button>${S.config.categories.map(c => `<button class="chip" data-c="${esc(c)}">${esc(c)}</button>`).join('')}</div>
-    <div id="vlist">${loading}</div><div class="center" style="margin-top:16px"><button class="btn alt" id="more" hidden>Load more</button></div>`;
-  let shown = 0;
-  const load = async (reset) => {
-    if (reset) { st.page = 1; shown = 0; $('#vlist').innerHTML = loading; }
-    const p = new URLSearchParams({ page: st.page });
-    if (st.q) p.set('q', st.q); if (st.category) p.set('category', st.category);
-    const d = await api('/videos?' + p);
-    if (reset) $('#vlist').innerHTML = '<div class="grid" id="g"></div>';
-    if (!d.videos.length && reset) $('#vlist').innerHTML = '<div class="empty">No videos found.</div>';
-    $('#g') && $('#g').insertAdjacentHTML('beforeend', d.videos.map(videoCard).join(''));
-    shown += d.videos.length;
-    $('#more').hidden = shown >= d.total;
+    <div class="tabs" id="xt"><button data-t="videos" class="${tab === 'videos' ? 'on' : ''}">Videos</button><button data-t="live" class="${tab === 'live' ? 'on' : ''}">Live</button></div>
+    <div id="xbody"></div>`;
+  const body = $('#xbody');
+  const showVideos = async () => {
+    const st = { q: '', page: 1 };
+    body.innerHTML = `<input type="search" id="q" placeholder="Search videos" aria-label="Search videos" style="margin-bottom:12px">
+      <div id="vlist">${loading}</div><div class="center" style="margin-top:16px"><button class="btn alt" id="more" hidden>Load more</button></div>`;
+    let shown = 0;
+    const load = async (reset) => {
+      if (reset) { st.page = 1; shown = 0; $('#vlist').innerHTML = loading; }
+      const p = new URLSearchParams({ page: st.page });
+      if (st.q) p.set('q', st.q);
+      const d = await api('/videos?' + p);
+      if (!$('#vlist')) return;
+      if (reset) $('#vlist').innerHTML = '<div class="grid" id="g"></div>';
+      if (!d.videos.length && reset) $('#vlist').innerHTML = '<div class="empty">No videos found.</div>';
+      $('#g') && $('#g').insertAdjacentHTML('beforeend', d.videos.map(videoCard).join(''));
+      shown += d.videos.length;
+      $('#more').hidden = shown >= d.total;
+    };
+    let timer;
+    $('#q').oninput = e => { clearTimeout(timer); timer = setTimeout(() => { st.q = e.target.value.trim(); load(true).catch(x => toast(x.message, true)); }, 350); };
+    $('#more').onclick = () => { st.page++; load(false).catch(x => toast(x.message, true)); };
+    await load(true);
   };
-  let timer;
-  $('#q').oninput = e => { clearTimeout(timer); timer = setTimeout(() => { st.q = e.target.value.trim(); load(true).catch(x => toast(x.message, true)); }, 350); };
-  $('#cats').onclick = e => {
-    const b = e.target.closest('.chip'); if (!b) return;
-    $$('.chip', root).forEach(c => c.classList.toggle('on', c === b));
-    st.category = b.dataset.c; load(true).catch(x => toast(x.message, true));
+  const show = async t => {
+    tab = t;
+    $$('#xt button').forEach(x => x.classList.toggle('on', x.dataset.t === t));
+    try { if (t === 'live') window.CV.liveList(body); else await showVideos(); }
+    catch (e) { body.innerHTML = errBox(e.message); }
   };
-  $('#more').onclick = () => { st.page++; load(false).catch(x => toast(x.message, true)); };
-  await load(true);
+  $('#xt').onclick = e => {
+    const b = e.target.closest('button'); if (!b || b.dataset.t === tab) return;
+    history.replaceState(null, '', '#/explore' + (b.dataset.t === 'live' ? '?tab=live' : ''));
+    show(b.dataset.t);
+  };
+  await show(tab);
 });
 
 // --- video player ---
@@ -418,11 +432,13 @@ route('video', null, async ({ root, args }) => {
       <div class="overlay" id="ov" hidden></div></div>
     <div><h1>${esc(v.title)}</h1>
       <div class="row between"><a class="owner" href="#/u/${esc(v.owner && v.owner.username)}" style="margin:0">${avatarHtml(v.owner && v.owner.username, v.owner && v.owner.avatar)}<b style="color:var(--ink);font-size:.95rem">${esc(v.owner && v.owner.username)}</b></a>
-      <div class="row" style="gap:8px"><span class="badge">${esc(v.category)}</span><button class="btn alt sm" id="share">Share</button></div></div>
+      <button class="btn alt sm" id="share">Share</button></div>
       ${v.expires_at ? `<p class="small muted" style="margin:10px 0 0">Available until ${esc(dtime(v.expires_at))}</p>` : ''}
       ${v.description ? `<p style="margin-top:12px;white-space:pre-wrap">${esc(v.description)}</p>` : ''}
-      ${me && me.account_type === 'viewer' ? '<button class="btn ghost sm" id="rep" style="padding-left:0">Report this video</button>' : ''}</div></div>`;
+      ${me && me.account_type === 'viewer' ? '<button class="btn ghost sm" id="rep" style="padding-left:0">Report this video</button>' : ''}</div>
+    <div id="cm"></div></div>`;
   $('#share').onclick = () => shareVideo(v);
+  if (me) window.CV.comments($('#cm'), { video: v.id });
   const vid = $('#vid'), ov = $('#ov');
   vid.oncontextmenu = e => e.preventDefault();
   const setOv = html => { ov.innerHTML = html; ov.hidden = false; };
@@ -575,6 +591,10 @@ route('u', null, async ({ root, args }) => {
     ${d.account_type === 'curator' ? `<div class="stats"><div class="stat"><span>Published videos</span><b>${num((d.videos || []).length)}</b></div><div class="stat"><span>Total views</span><b>${num(d.total_views)}</b></div></div>
     <h2>Videos</h2>${(d.videos || []).length ? `<div class="grid">${d.videos.map(x => `<a class="vcard" href="#/video/${esc(x.id)}"><div class="th">${x.thumb ? `<img src="${esc(x.thumb)}" alt="" loading="lazy">` : ''}</div><div class="bd"><div class="t">${esc(x.title)}</div></div></a>`).join('')}</div>` : '<div class="empty">No videos yet.</div>'}` : ''}</div>`;
   $('#sharepub').onclick = () => shareProfile(d.username);
+  if (S.me && S.me.account_type === 'curator' && d.account_type === 'viewer') {
+    $('#sharepub').insertAdjacentHTML('afterend', ' <button class="btn sm" id="msg-u" style="margin-top:8px">Message</button>');
+    $('#msg-u').onclick = () => window.CV.composeMessage(d.username);
+  }
 });
 
 // --- legal pages ---
@@ -583,6 +603,7 @@ const LEGAL = {
     ['Eligibility', 'VIDXX is for adults aged 18 and over. You confirm you are 18+ when you register. We may suspend accounts we believe belong to minors.'],
     ['Accounts', 'Choose one account type at sign-up: Curator (upload and earn) or Viewer (watch and unlock). Account type changes need admin approval. Keep your password safe; you are responsible for activity on your account.'],
     ['Points', 'Points are bought with real money through Paystack and spent to unlock videos. An unlocked video stays unlocked for your account. Points have no cash value and cannot be withdrawn or transferred. Purchases are non-refundable except where the law requires or where we made an error.'],
+    ['Live and messages', 'Watching a live stream costs points for every minute you watch, charged while you are connected; you can leave at any time. Comments and live chat must follow the Content Guidelines. Curators can message viewers for free. A viewer\'s first replies in a conversation are free, after that each reply costs points. Viewers can block a creator at any time.'],
     ['Content', 'Curators must follow the Content Guidelines. We may approve, reject or remove content and suspend accounts at our discretion to keep the platform safe and lawful.'],
     ['Prohibited use', 'No fraud, fake views, bots, payment abuse, attempts to bypass the preview lock, or downloading and redistributing content.'],
     ['Liability', 'The service is provided "as is". To the extent the law allows, VIDXX is not liable for indirect or consequential loss.'],
@@ -613,7 +634,7 @@ Object.keys(LEGAL).forEach(k => route(k, null, ({ root }) => {
 }));
 
 // ---------- expose for creator.js / admin.js ----------
-window.CV = { shareVideo, shareProfile, S, api, route, esc, num, usd, kes, date, dtime, toast, modal, closeModal, loading, errBox, avatarHtml, icon, busy, resizeImage, videoCard, go, loadMe, renderTopRight, $, $$, parseHash };
+window.CV = { updateNav, shareVideo, shareProfile, S, api, route, esc, num, usd, kes, date, dtime, toast, modal, closeModal, loading, errBox, avatarHtml, icon, busy, resizeImage, videoCard, go, loadMe, renderTopRight, $, $$, parseHash };
 
 // ---------- boot ----------
 window.addEventListener('hashchange', render);

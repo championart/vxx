@@ -19,6 +19,7 @@ try { ffmpegPath = require('ffmpeg-static'); } catch (_) { /* optional */ }
 const {
   SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY,
   PAYSTACK_SECRET_KEY, PAYSTACK_CHANNELS, APP_URL, FRONTEND_ORIGIN,
+  LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET,
   PORT = 3000, ALLOW_UNSECURED_PREVIEW
 } = process.env;
 
@@ -78,6 +79,7 @@ async function saveAvatar(uid, dataUrl) {
   if (error) throw new Error('Avatar upload failed: ' + error.message);
   return p;
 }
+const exactName = x => String(x || '').replace(/[\\%_]/g, '\\$&');
 const cleanQ = s => String(s || '').replace(/[^\w\s-]/g, '').trim().slice(0, 40);
 
 // ---------- auth middleware ----------
@@ -157,7 +159,7 @@ const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 30, message: { er
 
 // ---------- public ----------
 app.get('/api/health', (req, res) => res.json({ ok: true }));
-app.get('/api/config', (req, res) => res.json({ supabaseUrl: SUPABASE_URL, anonKey: SUPABASE_ANON_KEY, categories: CATEGORIES }));
+app.get('/api/config', (req, res) => res.json({ supabaseUrl: SUPABASE_URL, anonKey: SUPABASE_ANON_KEY, categories: CATEGORIES, live: !!(LIVEKIT_URL && LIVEKIT_API_KEY && LIVEKIT_API_SECRET) }));
 app.get('/api/packages', wrap(async (req, res) => {
   const { data } = await db.from('point_packages').select('id,name,points,price_kes').eq('active', true).order('sort');
   const s = await getSettings();
@@ -175,7 +177,7 @@ app.post('/api/register', authLimiter, wrap(async (req, res) => {
   if (adult !== true) return res.status(400).json({ error: 'You must confirm you are 18 or older' });
   if (gender === 'female' && account_type === 'curator' && !avatar) return res.status(400).json({ error: 'A profile picture is required for female curators' });
 
-  const { data: taken } = await db.from('profiles').select('id').ilike('username', username).maybeSingle();
+  const { data: taken } = await db.from('profiles').select('id').ilike('username', exactName(username)).maybeSingle();
   if (taken) return res.status(409).json({ error: 'That username is taken' });
 
   const { data, error } = await anonClient().auth.signUp({
@@ -242,7 +244,7 @@ app.put('/api/me/avatar', auth, wrap(async (req, res) => {
 
 // ---------- public profile ----------
 app.get('/api/users/:username', optionalAuth, wrap(async (req, res) => {
-  const { data: p } = await db.from('profiles').select('*').ilike('username', req.params.username).maybeSingle();
+  const { data: p } = await db.from('profiles').select('*').ilike('username', exactName(req.params.username)).maybeSingle();
   if (!p || p.status === 'deactivated') return res.status(404).json({ error: 'User not found' });
   const out = shapeProfile(p);
   const isOwner = req.profile && req.profile.id === p.id;
@@ -585,8 +587,15 @@ app.get('/api/creator/dashboard', auth, role('curator'), wrap(async (req, res) =
   }));
   const withdrawn = (wd || []).filter(w => w.status === 'paid').reduce((a, w) => a + Number(w.amount_usd), 0);
   const s = await getSettings();
+  const { data: myStreams } = await db.from('streams').select('id').eq('host_id', uid);
+  let live_minutes = 0;
+  if ((myStreams || []).length) {
+    const { data: ls } = await db.from('live_sessions').select('minutes_paid').in('stream_id', myStreams.map(x => x.id));
+    live_minutes = (ls || []).reduce((a, x) => a + x.minutes_paid, 0);
+  }
   res.json({
     totals: {
+      live_minutes, live_streams: (myStreams || []).length,
       previews: videos.reduce((a, v) => a + v.previews, 0),
       paid_unlocks: videos.reduce((a, v) => a + v.paid, 0),
       total_views: videos.reduce((a, v) => a + v.previews + v.paid, 0),
@@ -702,14 +711,14 @@ app.put('/api/admin/videos/:id/price', ...admin, wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 
-const SETTING_KEYS = ['unlock_price_points', 'creator_rate_usd', 'min_withdrawal_usd', 'preview_seconds', 'usd_to_kes', 'video_lifetime_hours', 'auto_approve'];
+const SETTING_KEYS = ['unlock_price_points', 'creator_rate_usd', 'min_withdrawal_usd', 'preview_seconds', 'usd_to_kes', 'video_lifetime_hours', 'auto_approve', 'live_points_per_minute', 'live_creator_rate_usd', 'message_reply_points', 'message_free_replies'];
 app.get('/api/admin/settings', ...admin, wrap(async (req, res) => res.json(await getSettings())));
 app.put('/api/admin/settings', ...admin, wrap(async (req, res) => {
   const body = req.body || {};
   for (const k of SETTING_KEYS) {
     if (body[k] === undefined) continue;
     const n = Number(body[k]);
-    const zeroOk = k === 'video_lifetime_hours' || k === 'auto_approve';
+    const zeroOk = k === 'video_lifetime_hours' || k === 'auto_approve' || k === 'message_free_replies';
     if (zeroOk ? !(n >= 0) : !(n > 0)) return res.status(400).json({ error: `${k} must be ${zeroOk ? 'zero or a positive number' : 'a positive number'}` });
     await db.from('settings').upsert({ key: k, value: String(n), updated_at: new Date().toISOString() });
   }
@@ -810,7 +819,7 @@ app.get('/v/:id', wrap(async (req, res) => {
 app.get('/u/:username', wrap(async (req, res) => {
   let page = { title: 'VIDXX', desc: 'Watch, unlock and earn on VIDXX.', image: null, hash: 'u/' + encodeURIComponent(req.params.username) };
   try {
-    const { data: p } = await db.from('profiles').select('username,account_type,avatar_url,status').ilike('username', req.params.username).maybeSingle();
+    const { data: p } = await db.from('profiles').select('username,account_type,avatar_url,status').ilike('username', exactName(req.params.username)).maybeSingle();
     if (p && p.status === 'active') {
       page.title = `${p.username} on VIDXX`;
       page.desc = p.account_type === 'curator' ? `Watch ${p.username}'s videos on VIDXX. The first 10 seconds are free.` : `${p.username} is on VIDXX.`;
@@ -818,6 +827,321 @@ app.get('/u/:username', wrap(async (req, res) => {
     }
   } catch (_) { /* generic card */ }
   res.set('Cache-Control', 'public, max-age=300').type('html').send(sharePage(req, page));
+}));
+
+// =====================================================================
+// LIVE STREAMING (LiveKit), COMMENTS, MESSAGES
+// =====================================================================
+const { AccessToken, RoomServiceClient } = require('livekit-server-sdk');
+const lkReady = () => !!(LIVEKIT_URL && LIVEKIT_API_KEY && LIVEKIT_API_SECRET);
+const lkRooms = () => new RoomServiceClient(LIVEKIT_URL.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:'), LIVEKIT_API_KEY, LIVEKIT_API_SECRET);
+async function lkToken(identity, name, room, publish, ttlSeconds) {
+  const at = new AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET, { identity, name, ttl: ttlSeconds });
+  at.addGrant({ roomJoin: true, room, canPublish: publish, canSubscribe: true, canPublishData: publish });
+  return await at.toJwt();
+}
+const needLive = (req, res, next) => lkReady() ? next() : res.status(503).json({ error: 'Live streaming is not set up on this server yet.' });
+const userLimiter = (max, msg) => rateLimit({ windowMs: 60 * 1000, max, keyGenerator: req => req.user.id, standardHeaders: true, legacyHeaders: false, message: { error: msg || 'Slow down a little.' } });
+const cleanText = (t, max) => String(t || '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max);
+
+async function endStream(id) {
+  const { data: st } = await db.from('streams').select('id,room,status').eq('id', id).maybeSingle();
+  if (!st || st.status === 'ended') return false;
+  const now = new Date().toISOString();
+  await db.from('streams').update({ status: 'ended', ended_at: now }).eq('id', id);
+  await db.from('live_sessions').update({ ended_at: now }).eq('stream_id', id).is('ended_at', null);
+  if (lkReady()) lkRooms().deleteRoom(st.room).catch(() => {});
+  return true;
+}
+async function viewerCount(streamId) {
+  const { count } = await db.from('live_sessions').select('id', { count: 'exact', head: true }).eq('stream_id', streamId).is('ended_at', null);
+  return count || 0;
+}
+async function kick(streamId, viewerId) {
+  if (!lkReady()) return;
+  const { data: st } = await db.from('streams').select('room').eq('id', streamId).maybeSingle();
+  if (st) lkRooms().removeParticipant(st.room, viewerId).catch(() => {});
+}
+
+// --- live: browse ---
+app.get('/api/live', optionalAuth, wrap(async (req, res) => {
+  if (req.profile && req.profile.account_type === 'curator') return res.status(403).json({ error: 'Curators can\'t watch other creators\' live streams' });
+  const since = new Date(Date.now() - 120000).toISOString();
+  const { data, error } = await db.from('streams').select('id,title,started_at,host:profiles(username,avatar_url)')
+    .eq('status', 'live').gt('last_ping', since).order('started_at', { ascending: false }).limit(60);
+  if (error) throw new Error(error.message);
+  const counts = {};
+  if (data.length) {
+    const { data: ss } = await db.from('live_sessions').select('stream_id').is('ended_at', null).in('stream_id', data.map(x => x.id));
+    (ss || []).forEach(x => { counts[x.stream_id] = (counts[x.stream_id] || 0) + 1; });
+  }
+  const s = await getSettings();
+  res.json({
+    price: Number(s.live_points_per_minute),
+    streams: data.map(x => ({ id: x.id, title: x.title, started_at: x.started_at, viewers: counts[x.id] || 0, host: x.host ? { username: x.host.username, avatar: avatarOf(x.host) } : null }))
+  });
+}));
+
+// --- live: host ---
+app.get('/api/live/mine', auth, role('curator'), wrap(async (req, res) => {
+  const { data } = await db.from('streams').select('id,title,started_at').eq('host_id', req.profile.id).eq('status', 'live').maybeSingle();
+  res.json({ stream: data || null, configured: lkReady() });
+}));
+
+app.post('/api/live/start', auth, role('curator'), needLive, wrap(async (req, res) => {
+  const me = req.profile;
+  const { data: existing } = await db.from('streams').select('*').eq('host_id', me.id).eq('status', 'live').maybeSingle();
+  let st = existing;
+  if (st && !(req.body || {}).resume) { await endStream(st.id); st = null; }
+  if (!st) {
+    const title = cleanText((req.body || {}).title, 80);
+    if (title.length < 3) return res.status(400).json({ error: 'Give your live a title (at least 3 characters)' });
+    const { data, error } = await db.from('streams').insert({ host_id: me.id, title, room: 'vx-' + crypto.randomBytes(8).toString('hex') }).select().single();
+    if (error) {
+      console.error('stream insert failed:', error.code, error.message);
+      return res.status(500).json({ error: 'Could not start the live: ' + error.message });
+    }
+    st = data;
+    await audit(me.id, 'live_started', { stream: st.id });
+  } else {
+    await db.from('streams').update({ last_ping: new Date().toISOString() }).eq('id', st.id);
+  }
+  res.json({ stream: { id: st.id, title: st.title }, url: LIVEKIT_URL, token: await lkToken(me.id, me.username, st.room, true, 6 * 3600) });
+}));
+
+app.post('/api/live/:id/ping', auth, role('curator'), wrap(async (req, res) => {
+  const { data } = await db.from('streams').update({ last_ping: new Date().toISOString() })
+    .eq('id', req.params.id).eq('host_id', req.profile.id).eq('status', 'live').select('id').maybeSingle();
+  if (!data) return res.status(410).json({ error: 'This live has ended' });
+  res.json({ ok: true, viewers: await viewerCount(req.params.id) });
+}));
+
+app.post('/api/live/:id/end', auth, wrap(async (req, res) => {
+  const { data: st } = await db.from('streams').select('id,host_id').eq('id', req.params.id).maybeSingle();
+  if (!st) return res.status(404).json({ error: 'Not found' });
+  if (st.host_id !== req.profile.id && req.profile.account_type !== 'admin') return res.status(403).json({ error: 'Not allowed' });
+  await endStream(st.id);
+  await audit(req.profile.id, 'live_ended', { stream: st.id });
+  res.json({ ok: true });
+}));
+
+// --- live: viewer ---
+app.get('/api/live/:id', optionalAuth, wrap(async (req, res) => {
+  if (!/^[0-9a-f-]{36}$/.test(req.params.id)) return res.status(404).json({ error: 'Live not found' });
+  const { data: st } = await db.from('streams').select('id,title,status,started_at,host_id,host:profiles(username,avatar_url)').eq('id', req.params.id).maybeSingle();
+  if (!st) return res.status(404).json({ error: 'Live not found' });
+  const me = req.profile;
+  const isHost = !!me && me.id === st.host_id;
+  if (me && me.account_type === 'curator' && !isHost) return res.status(403).json({ error: 'Curators can\'t watch other creators\' live streams' });
+  const s = await getSettings();
+  res.json({
+    id: st.id, title: st.title, status: st.status, started_at: st.started_at, is_host: isHost,
+    host: st.host ? { username: st.host.username, avatar: avatarOf(st.host) } : null,
+    viewers: st.status === 'live' ? await viewerCount(st.id) : 0, price: Number(s.live_points_per_minute)
+  });
+}));
+
+async function liveChargeResponse(req, res, withToken) {
+  const { data, error } = await db.rpc('live_charge', { p_viewer: req.profile.id, p_stream: req.params.id });
+  if (error) throw new Error(error.message);
+  if (!data.ok) {
+    if (data.error !== 'not_allowed') await kick(req.params.id, req.profile.id);
+    const code = data.error === 'insufficient_points' ? 402 : data.error === 'stream_ended' ? 410 : 403;
+    return res.status(code).json({ ...data, error: data.error === 'stream_ended' ? 'This live has ended' : data.error === 'insufficient_points' ? 'Not enough points' : 'Not allowed' , code: data.error });
+  }
+  const out = { ...data };
+  if (withToken) {
+    const { data: st } = await db.from('streams').select('room').eq('id', req.params.id).single();
+    out.url = LIVEKIT_URL;
+    out.token = await lkToken(req.profile.id, req.profile.username, st.room, false, 5 * 60);
+  }
+  res.json(out);
+}
+app.post('/api/live/:id/watch', auth, role('viewer'), needLive, wrap((req, res) => liveChargeResponse(req, res, true)));
+app.post('/api/live/:id/heartbeat', auth, role('viewer'), wrap((req, res) => liveChargeResponse(req, res, false)));
+app.post('/api/live/:id/leave', auth, role('viewer'), wrap(async (req, res) => {
+  await db.from('live_sessions').update({ ended_at: new Date().toISOString() }).eq('stream_id', req.params.id).eq('viewer_id', req.profile.id).is('ended_at', null);
+  res.json({ ok: true });
+}));
+
+// --- live: housekeeping (ends abandoned streams, removes viewers who stopped paying) ---
+async function sweepLive() {
+  const nowIso = new Date().toISOString();
+  const { data: dead } = await db.from('streams').select('id').eq('status', 'live').lt('last_ping', new Date(Date.now() - 120000).toISOString());
+  for (const x of dead || []) await endStream(x.id);
+  const { data: lapsed } = await db.from('live_sessions').select('id,viewer_id,stream:streams(room)')
+    .is('ended_at', null).lt('paid_until', new Date(Date.now() - 20000).toISOString()).limit(200);
+  for (const x of lapsed || []) {
+    await db.from('live_sessions').update({ ended_at: nowIso }).eq('id', x.id).is('ended_at', null);
+    if (lkReady() && x.stream) lkRooms().removeParticipant(x.stream.room, x.viewer_id).catch(() => {});
+  }
+}
+setInterval(() => sweepLive().catch(e => console.error('sweepLive', e.message)), 30000);
+
+// --- admin: live ---
+app.get('/api/admin/live', ...admin, wrap(async (req, res) => {
+  const { data } = await db.from('streams').select('id,title,status,started_at,last_ping,peak_viewers,host:profiles(username)').order('started_at', { ascending: false }).limit(50);
+  res.json({ streams: data || [] });
+}));
+
+// --- comments (video comments and live chat share one table) ---
+async function commentTarget(me, query) {
+  if (query.video) {
+    const { data: v } = await db.from('videos').select('id,owner_id,status').eq('id', String(query.video)).maybeSingle();
+    if (!v || v.status === 'deleted') return { error: 'Video not found', status: 404 };
+    const owner = v.owner_id === me.id, adm = me.account_type === 'admin';
+    if (v.status !== 'approved' && !owner && !adm) return { error: 'Video not found', status: 404 };
+    if (me.account_type === 'curator' && !owner) return { error: 'Not allowed', status: 403 };
+    return { kind: 'video', id: v.id, ownerId: v.owner_id };
+  }
+  if (query.stream) {
+    const { data: st } = await db.from('streams').select('id,host_id,status').eq('id', String(query.stream)).maybeSingle();
+    if (!st) return { error: 'Live not found', status: 404 };
+    const host = st.host_id === me.id, adm = me.account_type === 'admin';
+    if (!host && !adm) {
+      if (me.account_type !== 'viewer') return { error: 'Not allowed', status: 403 };
+      const { data: sess } = await db.from('live_sessions').select('id').eq('stream_id', st.id).eq('viewer_id', me.id)
+        .is('ended_at', null).gt('paid_until', new Date(Date.now() - 20000).toISOString()).maybeSingle();
+      if (!sess) return { error: 'Watch the live to join the chat', status: 403 };
+    }
+    return { kind: 'stream', id: st.id, ownerId: st.host_id, ended: st.status !== 'live' };
+  }
+  return { error: 'Missing video or stream', status: 400 };
+}
+const shapeComment = (c, me, ownerId) => ({
+  id: c.id, body: c.body, created_at: c.created_at,
+  user: c.user ? { username: c.user.username, avatar: avatarOf(c.user), account_type: c.user.account_type } : null,
+  can_delete: c.user_id === me.id || ownerId === me.id || me.account_type === 'admin'
+});
+
+app.get('/api/comments', auth, wrap(async (req, res) => {
+  const t = await commentTarget(req.profile, req.query);
+  if (t.error) return res.status(t.status).json({ error: t.error });
+  const after = parseInt(req.query.after) || 0;
+  let q = db.from('comments').select('id,body,created_at,user_id,user:profiles(username,avatar_url,account_type)')
+    .eq(t.kind === 'video' ? 'video_id' : 'stream_id', t.id).eq('deleted', false);
+  q = after ? q.gt('id', after).order('id', { ascending: true }).limit(100) : q.order('id', { ascending: false }).limit(50);
+  const { data, error } = await q;
+  if (error) throw new Error(error.message);
+  res.json({ order: after ? 'asc' : 'desc', ended: !!t.ended, comments: data.map(c => shapeComment(c, req.profile, t.ownerId)) });
+}));
+
+app.post('/api/comments', auth, userLimiter(20, 'You\'re commenting too fast. Wait a moment.'), wrap(async (req, res) => {
+  const t = await commentTarget(req.profile, req.body || {});
+  if (t.error) return res.status(t.status).json({ error: t.error });
+  if (t.ended) return res.status(410).json({ error: 'This live has ended' });
+  const body = cleanText((req.body || {}).body, 300);
+  if (!body) return res.status(400).json({ error: 'Write something first' });
+  const row = { user_id: req.profile.id, body, [t.kind === 'video' ? 'video_id' : 'stream_id']: t.id };
+  const { data, error } = await db.from('comments').insert(row).select('id,body,created_at,user_id,user:profiles(username,avatar_url,account_type)').single();
+  if (error) throw new Error(error.message);
+  res.json({ comment: shapeComment(data, req.profile, t.ownerId) });
+}));
+
+app.delete('/api/comments/:id', auth, wrap(async (req, res) => {
+  const { data: c } = await db.from('comments').select('id,user_id,video_id,stream_id,deleted').eq('id', req.params.id).maybeSingle();
+  if (!c || c.deleted) return res.status(404).json({ error: 'Not found' });
+  let ownerId = null;
+  if (c.video_id) { const { data: v } = await db.from('videos').select('owner_id').eq('id', c.video_id).maybeSingle(); ownerId = v && v.owner_id; }
+  if (c.stream_id) { const { data: s } = await db.from('streams').select('host_id').eq('id', c.stream_id).maybeSingle(); ownerId = s && s.host_id; }
+  if (c.user_id !== req.profile.id && ownerId !== req.profile.id && req.profile.account_type !== 'admin') return res.status(403).json({ error: 'Not allowed' });
+  await db.from('comments').update({ deleted: true }).eq('id', c.id);
+  res.json({ ok: true });
+}));
+
+// --- messages: curators message viewers for free; viewers' first replies are free, then points ---
+const dmRoles = role('viewer', 'curator');
+async function getConv(id, me) {
+  if (!/^[0-9a-f-]{36}$/.test(id)) return null;
+  const { data: c } = await db.from('conversations').select('*').eq('id', id).maybeSingle();
+  if (!c || (c.curator_id !== me.id && c.viewer_id !== me.id)) return null;
+  return c;
+}
+async function convMeta(c, me, s) {
+  const otherId = me.account_type === 'curator' ? c.viewer_id : c.curator_id;
+  const { data: o } = await db.from('profiles').select('username,avatar_url,account_type').eq('id', otherId).single();
+  const free = Number(s.message_free_replies);
+  return {
+    id: c.id, blocked: c.blocked, other: { username: o.username, avatar: avatarOf(o), account_type: o.account_type },
+    reply_cost: Number(s.message_reply_points), free_left: Math.max(free - c.viewer_replies, 0)
+  };
+}
+
+app.get('/api/messages/unread', auth, dmRoles, wrap(async (req, res) => {
+  const { data } = await db.rpc('unread_total', { p_user: req.profile.id });
+  res.json({ unread: Number(data || 0) });
+}));
+
+app.get('/api/conversations', auth, dmRoles, wrap(async (req, res) => {
+  const { data, error } = await db.rpc('inbox', { p_user: req.profile.id });
+  if (error) throw new Error(error.message);
+  const s = await getSettings();
+  res.json({
+    reply_cost: Number(s.message_reply_points), free_replies: Number(s.message_free_replies),
+    conversations: (data || []).map(r => ({
+      id: r.conv_id, blocked: r.blocked, last_body: r.last_body, last_at: r.last_at, unread: Number(r.unread),
+      other: { username: r.other_username, avatar: r.other_avatar ? publicUrl('avatars', r.other_avatar) : null }
+    }))
+  });
+}));
+
+app.post('/api/messages/send', auth, role('curator'), userLimiter(20, 'You\'re sending messages too fast.'), wrap(async (req, res) => {
+  const body = cleanText((req.body || {}).body, 1000);
+  const name = String((req.body || {}).username || '').trim().replace(/^@/, '');
+  if (!name || !body) return res.status(400).json({ error: 'Enter a username and a message' });
+  const { data: v } = await db.from('profiles').select('id,account_type,status').ilike('username', exactName(name)).maybeSingle();
+  if (!v || v.account_type !== 'viewer' || v.status !== 'active') return res.status(404).json({ error: 'No viewer found with that username' });
+  let { data: c } = await db.from('conversations').select('*').eq('curator_id', req.profile.id).eq('viewer_id', v.id).maybeSingle();
+  if (!c) {
+    const ins = await db.from('conversations').insert({ curator_id: req.profile.id, viewer_id: v.id }).select().single();
+    if (ins.error) {
+      const again = await db.from('conversations').select('*').eq('curator_id', req.profile.id).eq('viewer_id', v.id).maybeSingle();
+      if (!again.data) throw new Error(ins.error.message);
+      c = again.data;
+    } else c = ins.data;
+  }
+  if (c.blocked) return res.status(403).json({ error: 'This viewer has blocked messages from you' });
+  const { error } = await db.from('messages').insert({ conversation_id: c.id, sender_id: req.profile.id, body, cost: 0 });
+  if (error) throw new Error(error.message);
+  await db.from('conversations').update({ last_message_at: new Date().toISOString() }).eq('id', c.id);
+  res.json({ ok: true, conversation_id: c.id });
+}));
+
+app.get('/api/conversations/:id/messages', auth, dmRoles, wrap(async (req, res) => {
+  const c = await getConv(req.params.id, req.profile);
+  if (!c) return res.status(404).json({ error: 'Conversation not found' });
+  const after = parseInt(req.query.after) || 0;
+  const { data, error } = await db.from('messages').select('id,sender_id,body,cost,created_at').eq('conversation_id', c.id).gt('id', after).order('id', { ascending: true }).limit(200);
+  if (error) throw new Error(error.message);
+  await db.from('messages').update({ read_at: new Date().toISOString() }).eq('conversation_id', c.id).neq('sender_id', req.profile.id).is('read_at', null);
+  const s = await getSettings();
+  const meta = await convMeta(c, req.profile, s);
+  res.json({ ...meta, messages: data.map(m => ({ id: m.id, mine: m.sender_id === req.profile.id, body: m.body, cost: m.cost, created_at: m.created_at })) });
+}));
+
+app.post('/api/conversations/:id/messages', auth, dmRoles, userLimiter(30, 'You\'re sending messages too fast.'), wrap(async (req, res) => {
+  const c = await getConv(req.params.id, req.profile);
+  if (!c) return res.status(404).json({ error: 'Conversation not found' });
+  const body = cleanText((req.body || {}).body, 1000);
+  if (!body) return res.status(400).json({ error: 'Write a message first' });
+  if (req.profile.account_type === 'viewer') {
+    const { data, error } = await db.rpc('viewer_reply', { p_viewer: req.profile.id, p_conv: c.id, p_body: body });
+    if (error) throw new Error(error.message);
+    if (!data.ok) return res.status(data.error === 'insufficient_points' ? 402 : 404).json({ ...data, error: data.error === 'insufficient_points' ? `Replying costs ${data.needed} points and you have ${data.balance}.` : 'Conversation not found' });
+    return res.json(data);
+  }
+  if (c.blocked) return res.status(403).json({ error: 'This viewer has blocked messages from you' });
+  const { error } = await db.from('messages').insert({ conversation_id: c.id, sender_id: req.profile.id, body, cost: 0 });
+  if (error) throw new Error(error.message);
+  await db.from('conversations').update({ last_message_at: new Date().toISOString() }).eq('id', c.id);
+  res.json({ ok: true, cost: 0 });
+}));
+
+app.post('/api/conversations/:id/block', auth, role('viewer'), wrap(async (req, res) => {
+  const c = await getConv(req.params.id, req.profile);
+  if (!c) return res.status(404).json({ error: 'Conversation not found' });
+  await db.from('conversations').update({ blocked: (req.body || {}).blocked !== false }).eq('id', c.id);
+  res.json({ ok: true });
 }));
 
 // ---------- static frontend ----------

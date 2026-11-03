@@ -3,7 +3,7 @@
 'use strict';
 const { api, route, esc, num, usd, kes, date, dtime, toast, modal, closeModal, loading, errBox, avatarHtml, busy, $, $$ } = window.CV;
 const badge = s => `<span class="badge ${esc(s)}">${esc(s)}</span>`;
-const TABS = [['overview', 'Overview'], ['users', 'Users'], ['videos', 'Videos'], ['payments', 'Payments'], ['withdrawals', 'Withdrawals'], ['settings', 'Pricing & settings'], ['reports', 'Reports'], ['audit', 'Audit log']];
+const TABS = [['overview', 'Overview'], ['users', 'Users'], ['videos', 'Videos'], ['live', 'Live'], ['payments', 'Payments'], ['withdrawals', 'Withdrawals'], ['settings', 'Pricing & settings'], ['reports', 'Reports'], ['audit', 'Audit log']];
 
 route('admin', ['admin'], async ({ root }) => {
   root.innerHTML = `<h1>Admin dashboard</h1><div class="tabs" id="atabs">${TABS.map(([k, l], i) => `<button data-t="${k}" class="${i ? '' : 'on'}">${l}</button>`).join('')}</div><div id="abody"></div>`;
@@ -76,6 +76,12 @@ const views = {
     await load();
   },
 
+  async live(el) {
+    const d = await api('/admin/live');
+    el.innerHTML = d.streams.length ? `<div class="tablewrap"><table><thead><tr><th>Started</th><th>Host</th><th>Title</th><th>Status</th><th>Peak viewers</th><th></th></tr></thead><tbody>${d.streams.map(s => `<tr><td>${dtime(s.started_at)}</td><td>${esc(s.host && s.host.username)}</td><td class="wrap">${esc(s.title)}</td><td>${badge(s.status === 'live' ? 'active' : 'pending')}</td><td>${num(s.peak_viewers)}</td><td>${s.status === 'live' ? `<button class="btn bad sm le" data-id="${esc(s.id)}">End stream</button>` : ''}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">No live streams yet.</div>';
+    $$('.le', el).forEach(b => b.onclick = async () => { if (!confirm('End this live stream now?')) return; try { await api(`/live/${b.dataset.id}/end`, { method: 'POST' }); toast('Stream ended'); views.live(el); } catch (e) { toast(e.message, true); } });
+  },
+
   async payments(el) {
     const d = await api('/admin/payments');
     el.innerHTML = d.payments.length ? `<div class="tablewrap"><table><thead><tr><th>Date</th><th>User</th><th>Reference</th><th>Points</th><th>Amount</th><th>Channel</th><th>Status</th></tr></thead><tbody>${d.payments.map(p => `<tr><td>${dtime(p.created_at)}</td><td>${esc(p.user && p.user.username)}</td><td>${esc(p.reference)}</td><td>${num(p.points)}</td><td>${kes(p.amount_kes)}</td><td>${esc(p.channel || '')}</td><td>${badge(p.status)}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">No payments yet.</div>';
@@ -103,6 +109,10 @@ const views = {
       <div class="field"><label>Free preview length (seconds)</label><input type="number" min="1" id="s4" value="${esc(s.preview_seconds)}"><div class="hint">Applies to newly generated preview clips.</div></div>
       <div class="field"><label>New videos</label><select id="s7"><option value="1" ${Number(s.auto_approve) === 1 ? 'selected' : ''}>Go live automatically</option><option value="0" ${Number(s.auto_approve) === 1 ? '' : 'selected'}>Wait for my approval</option></select><div class="hint">Automatic videos go live as soon as their preview clip is ready (about a minute). You can still reject or delete any video.</div></div>
       <div class="field"><label>Videos auto-delete after (hours)</label><input type="number" min="0" id="s6" value="${esc(s.video_lifetime_hours || 0)}"><div class="hint">Counted from when you approve a video. 0 = never delete. Deleted videos free your storage and can't be watched again.</div></div>
+      <div class="field"><label>Live: points per minute of watching</label><input type="number" min="1" id="s8" value="${esc(s.live_points_per_minute || 30)}"></div>
+      <div class="field"><label>Live: creator earning per paid viewer-minute (USD)</label><input type="number" step="0.0001" min="0" id="s9" value="${esc(s.live_creator_rate_usd || 0.001)}"></div>
+      <div class="field"><label>Messages: free viewer replies per conversation</label><input type="number" min="0" id="s10" value="${esc(s.message_free_replies == null ? 2 : s.message_free_replies)}"></div>
+      <div class="field"><label>Messages: points per viewer reply after the free ones</label><input type="number" min="1" id="s11" value="${esc(s.message_reply_points || 3)}"></div>
       <div class="field"><label>USD → KES rate (for payouts)</label><input type="number" step="0.01" min="1" id="s5" value="${esc(s.usd_to_kes)}"></div>
       <button class="btn">Save settings</button></form>
       <div class="card"><h2 style="margin-top:0">Points packages</h2>
@@ -111,7 +121,7 @@ const views = {
         <form class="row" id="nf" style="margin-top:12px"><input type="text" id="nn" placeholder="Name" style="width:120px"><input type="number" id="np" placeholder="Points" style="width:110px"><input type="number" id="nc" placeholder="Price KES" style="width:110px"><button class="btn sm">Add package</button></form></div></div>`;
     $('#sf').onsubmit = async e => {
       e.preventDefault();
-      try { await api('/admin/settings', { method: 'PUT', body: { unlock_price_points: $('#s1').value, creator_rate_usd: $('#s2').value, min_withdrawal_usd: $('#s3').value, preview_seconds: $('#s4').value, usd_to_kes: $('#s5').value, video_lifetime_hours: $('#s6').value, auto_approve: $('#s7').value } }); toast('Settings saved'); }
+      try { await api('/admin/settings', { method: 'PUT', body: { unlock_price_points: $('#s1').value, creator_rate_usd: $('#s2').value, min_withdrawal_usd: $('#s3').value, preview_seconds: $('#s4').value, usd_to_kes: $('#s5').value, video_lifetime_hours: $('#s6').value, auto_approve: $('#s7').value, live_points_per_minute: $('#s8').value, live_creator_rate_usd: $('#s9').value, message_free_replies: $('#s10').value, message_reply_points: $('#s11').value } }); toast('Settings saved'); }
       catch (er) { toast(er.message, true); }
     };
     $$('.ps', el).forEach(b => b.onclick = async () => {

@@ -14,6 +14,7 @@ route('dashboard', ['curator'], async ({ root }) => {
       <div class="stat"><span>Total video views</span><b>${num(t.total_views)}</b></div>
       <div class="stat"><span>Paid unlocks</span><b>${num(t.paid_unlocks)}</b></div>
       <div class="stat"><span>Free previews</span><b>${num(t.previews)}</b></div>
+      <div class="stat"><span>Live minutes watched</span><b>${num(t.live_minutes)}</b></div>
       <div class="stat"><span>Total earnings</span><b>${usd(t.total_earned)}</b></div>
       <div class="stat"><span>Available</span><b>${usd(t.available)}</b></div>
       <div class="stat"><span>Pending</span><b>${usd(t.pending)}</b></div>
@@ -79,7 +80,6 @@ route('upload', ['curator'], async ({ root }) => {
     <div class="field"><label for="thumb">Thumbnail image</label><input type="file" id="thumb" accept="image/jpeg,image/png,image/webp"><div id="tprev" style="margin-top:8px"></div></div>
     <div class="field"><label for="title">Title</label><input type="text" id="title" maxlength="100"></div>
     <div class="field"><label for="desc">Description</label><textarea id="desc" rows="3" maxlength="2000"></textarea></div>
-    <div class="field"><label for="cat">Category</label><select id="cat">${cfg.categories.map(c => `<option>${esc(c)}</option>`).join('')}</select></div>
     <div id="uerr"></div><div id="ustat"></div>
     <button class="btn block" id="usub">Upload video</button></form>`;
   let thumbBlob = null;
@@ -111,7 +111,7 @@ route('upload', ['curator'], async ({ root }) => {
       ]);
       if (a.error) throw new Error('Video upload failed: ' + a.error.message);
       if (b.error) throw new Error('Thumbnail upload failed: ' + b.error.message);
-      await api('/videos', { method: 'POST', body: { id: u.video_id, title, description: $('#desc').value, category: $('#cat').value, video_path: u.video.path, thumb_path: u.thumb.path } });
+      await api('/videos', { method: 'POST', body: { id: u.video_id, title, description: $('#desc').value, video_path: u.video.path, thumb_path: u.thumb.path } });
       root.innerHTML = `<div class="card stack center" style="max-width:480px;margin:30px auto"><h1>Upload complete</h1><p class="muted">We're preparing your preview clip. Your video goes live in about a minute and shows as Approved on your dashboard.</p><div class="row" style="justify-content:center"><a class="btn" href="#/dashboard">Go to dashboard</a><a class="btn alt" href="#/upload">Upload another</a></div></div>`;
     } catch (er) { $('#ustat').innerHTML = ''; err(er.message); busy($('#usub'), false); }
   };

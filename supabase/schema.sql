@@ -240,7 +240,7 @@ end $$;
 create or replace function creator_balance(p_creator uuid)
 returns jsonb language sql stable as $$
   select jsonb_build_object(
-    'total_earned', coalesce(sum(amount_usd) filter (where reason in ('unlock','admin_adjust')), 0),
+    'total_earned', coalesce(sum(amount_usd) filter (where reason in ('unlock','live','admin_adjust')), 0),
     'pending',      coalesce(-sum(amount_usd) filter (where reason = 'withdrawal_hold'), 0)
                     - coalesce(sum(amount_usd) filter (where reason = 'withdrawal_release'), 0),
     'available',    coalesce(sum(amount_usd), 0)
@@ -309,7 +309,7 @@ returns table(bucket date, unlocks bigint, earned numeric)
 language sql stable as $$
   select date_trunc(p_unit, created_at)::date, count(*), sum(amount_usd)
   from earnings_ledger
-  where creator_id = p_creator and reason = 'unlock' and created_at >= p_since
+  where creator_id = p_creator and reason in ('unlock','live') and created_at >= p_since
   group by 1 order by 1
 $$;
 
@@ -326,7 +326,7 @@ returns jsonb language sql stable as $$
     'previews_total',  (select count(*) from video_views where kind = 'preview'),
     'paid_unlocks',    (select count(*) from video_unlocks),
     'revenue_kes',     (select coalesce(sum(amount_kes), 0) from payments where status = 'success'),
-    'creator_earned_usd', (select coalesce(sum(amount_usd), 0) from earnings_ledger where reason in ('unlock','admin_adjust')),
+    'creator_earned_usd', (select coalesce(sum(amount_usd), 0) from earnings_ledger where reason in ('unlock','live','admin_adjust')),
     'withdrawals_pending', (select count(*) from withdrawals where status = 'pending'),
     'open_reports',    (select count(*) from reports where status = 'open')
   )
@@ -358,6 +358,201 @@ revoke execute on function unlock_video(uuid, uuid) from public, anon, authentic
 revoke execute on function request_withdrawal(uuid, numeric, text, text) from public, anon, authenticated;
 revoke execute on function review_withdrawal(uuid, uuid, text, text) from public, anon, authenticated;
 revoke execute on function creator_balance(uuid) from public, anon, authenticated;
+
+-- =====================================================================
+-- Live streaming, comments and messages
+-- =====================================================================
+insert into settings (key, value) values
+  ('live_points_per_minute', '30'),     -- points a viewer pays per minute of live
+  ('live_creator_rate_usd', '0.001'),   -- creator earning per paid viewer-minute
+  ('message_reply_points', '3'),        -- points per viewer reply after the free ones
+  ('message_free_replies', '2')         -- free viewer replies per conversation
+on conflict (key) do nothing;
+
+-- allow the new ledger reasons (works on a fresh or an existing database)
+alter table points_ledger drop constraint if exists points_ledger_reason_check;
+alter table points_ledger add constraint points_ledger_reason_check
+  check (reason in ('purchase','unlock','admin_adjust','live','message'));
+alter table points_ledger add column if not exists ref_stream uuid;
+alter table earnings_ledger drop constraint if exists earnings_ledger_reason_check;
+alter table earnings_ledger add constraint earnings_ledger_reason_check
+  check (reason in ('unlock','live','withdrawal_hold','withdrawal_release','admin_adjust'));
+alter table earnings_ledger add column if not exists ref_stream uuid;
+
+create table if not exists streams (
+  id uuid primary key default gen_random_uuid(),
+  host_id uuid not null references profiles(id) on delete cascade,
+  title text not null,
+  room text not null unique,
+  status text not null default 'live' check (status in ('live','ended')),
+  started_at timestamptz not null default now(),
+  last_ping timestamptz not null default now(),
+  ended_at timestamptz,
+  peak_viewers int not null default 0
+);
+create unique index if not exists streams_one_live_per_host on streams (host_id) where status = 'live';
+create index if not exists streams_status on streams (status, started_at desc);
+
+create table if not exists live_sessions (
+  id uuid primary key default gen_random_uuid(),
+  stream_id uuid not null references streams(id) on delete cascade,
+  viewer_id uuid not null references profiles(id) on delete cascade,
+  started_at timestamptz not null default now(),
+  paid_until timestamptz not null default now(),
+  minutes_paid int not null default 0,
+  points_spent int not null default 0,
+  ended_at timestamptz
+);
+create unique index if not exists live_sessions_one_active on live_sessions (stream_id, viewer_id) where ended_at is null;
+create index if not exists live_sessions_active on live_sessions (stream_id) where ended_at is null;
+
+create table if not exists comments (
+  id bigserial primary key,
+  user_id uuid not null references profiles(id) on delete cascade,
+  video_id uuid references videos(id) on delete cascade,
+  stream_id uuid references streams(id) on delete cascade,
+  body text not null check (char_length(body) between 1 and 300),
+  deleted boolean not null default false,
+  created_at timestamptz not null default now(),
+  check ((video_id is not null)::int + (stream_id is not null)::int = 1)
+);
+create index if not exists comments_video on comments (video_id, id desc) where video_id is not null;
+create index if not exists comments_stream on comments (stream_id, id) where stream_id is not null;
+
+create table if not exists conversations (
+  id uuid primary key default gen_random_uuid(),
+  curator_id uuid not null references profiles(id) on delete cascade,
+  viewer_id uuid not null references profiles(id) on delete cascade,
+  viewer_replies int not null default 0,
+  blocked boolean not null default false,
+  created_at timestamptz not null default now(),
+  last_message_at timestamptz not null default now(),
+  unique (curator_id, viewer_id)
+);
+create index if not exists conversations_viewer on conversations (viewer_id, last_message_at desc);
+create index if not exists conversations_curator on conversations (curator_id, last_message_at desc);
+
+create table if not exists messages (
+  id bigserial primary key,
+  conversation_id uuid not null references conversations(id) on delete cascade,
+  sender_id uuid not null references profiles(id) on delete cascade,
+  body text not null check (char_length(body) between 1 and 1000),
+  cost int not null default 0,
+  read_at timestamptz,
+  created_at timestamptz not null default now()
+);
+create index if not exists messages_conv on messages (conversation_id, id);
+
+-- Charge one minute of live viewing. Creates the viewer's session on first call and renews it after.
+-- Safe to call repeatedly: the viewer row is locked and a minute is only charged inside the renewal window.
+create or replace function live_charge(p_viewer uuid, p_stream uuid)
+returns jsonb language plpgsql security definer as $$
+declare st streams; sess live_sessions; has_sess boolean; price int; rate numeric;
+        bal bigint; newbal bigint; vtype text; vstatus text;
+begin
+  select account_type, status into vtype, vstatus from profiles where id = p_viewer;
+  if vtype is distinct from 'viewer' or vstatus <> 'active' then
+    return jsonb_build_object('ok', false, 'error', 'not_allowed');
+  end if;
+  select * into st from streams where id = p_stream;
+  if not found or st.status <> 'live' then
+    update live_sessions set ended_at = now() where stream_id = p_stream and viewer_id = p_viewer and ended_at is null;
+    return jsonb_build_object('ok', false, 'error', 'stream_ended');
+  end if;
+  price := setting_num('live_points_per_minute')::int;
+  rate  := setting_num('live_creator_rate_usd');
+
+  select points_balance into bal from profiles where id = p_viewer for update;
+  select * into sess from live_sessions where stream_id = p_stream and viewer_id = p_viewer and ended_at is null for update;
+  has_sess := found;
+
+  if has_sess and now() < sess.paid_until - interval '15 seconds' then
+    return jsonb_build_object('ok', true, 'charged', false, 'balance', bal, 'paid_until', sess.paid_until);
+  end if;
+
+  if bal < price then
+    if has_sess then update live_sessions set ended_at = now() where id = sess.id; end if;
+    return jsonb_build_object('ok', false, 'error', 'insufficient_points', 'needed', price, 'balance', bal);
+  end if;
+
+  update profiles set points_balance = points_balance - price where id = p_viewer
+    returning points_balance into newbal;
+  if has_sess then
+    update live_sessions set paid_until = greatest(paid_until, now()) + interval '60 seconds',
+      minutes_paid = minutes_paid + 1, points_spent = points_spent + price
+      where id = sess.id returning * into sess;
+  else
+    insert into live_sessions(stream_id, viewer_id, paid_until, minutes_paid, points_spent)
+      values (p_stream, p_viewer, now() + interval '60 seconds', 1, price) returning * into sess;
+  end if;
+  insert into points_ledger(user_id, delta, reason, ref_stream, balance_after)
+    values (p_viewer, -price, 'live', p_stream, newbal);
+  insert into earnings_ledger(creator_id, amount_usd, reason, ref_stream, ref_viewer)
+    values (st.host_id, rate, 'live', p_stream, p_viewer);
+  update streams set peak_viewers = greatest(peak_viewers,
+    (select count(*) from live_sessions where stream_id = p_stream and ended_at is null)::int)
+    where id = p_stream;
+  return jsonb_build_object('ok', true, 'charged', true, 'spent', price, 'balance', newbal, 'paid_until', sess.paid_until);
+end $$;
+
+-- A viewer replies in a conversation a curator started. First N replies free, then points per reply.
+create or replace function viewer_reply(p_viewer uuid, p_conv uuid, p_body text)
+returns jsonb language plpgsql security definer as $$
+declare c conversations; free int; cost int := 0; bal bigint; newbal bigint; mid bigint;
+begin
+  select * into c from conversations where id = p_conv for update;
+  if not found or c.viewer_id <> p_viewer then
+    return jsonb_build_object('ok', false, 'error', 'not_found');
+  end if;
+  free := setting_num('message_free_replies')::int;
+  select points_balance into bal from profiles where id = p_viewer for update;
+  newbal := bal;
+  if c.viewer_replies >= free then
+    cost := setting_num('message_reply_points')::int;
+    if bal < cost then
+      return jsonb_build_object('ok', false, 'error', 'insufficient_points', 'needed', cost, 'balance', bal);
+    end if;
+    update profiles set points_balance = points_balance - cost where id = p_viewer
+      returning points_balance into newbal;
+    insert into points_ledger(user_id, delta, reason, balance_after) values (p_viewer, -cost, 'message', newbal);
+  end if;
+  insert into messages(conversation_id, sender_id, body, cost) values (p_conv, p_viewer, p_body, cost) returning id into mid;
+  update conversations set viewer_replies = viewer_replies + 1, last_message_at = now() where id = p_conv;
+  return jsonb_build_object('ok', true, 'id', mid, 'cost', cost, 'balance', newbal,
+    'free_left', greatest(free - (c.viewer_replies + 1), 0));
+end $$;
+
+-- inbox for a user (curator or viewer)
+create or replace function inbox(p_user uuid)
+returns table(conv_id uuid, other_id uuid, other_username text, other_avatar text, blocked boolean,
+              viewer_replies int, last_body text, last_at timestamptz, unread bigint)
+language sql stable as $$
+  select c.id, o.id, o.username, o.avatar_url, c.blocked, c.viewer_replies,
+    (select m.body from messages m where m.conversation_id = c.id order by m.id desc limit 1),
+    c.last_message_at,
+    (select count(*) from messages m where m.conversation_id = c.id and m.sender_id <> p_user and m.read_at is null)
+  from conversations c
+  join profiles o on o.id = case when c.curator_id = p_user then c.viewer_id else c.curator_id end
+  where c.curator_id = p_user or c.viewer_id = p_user
+  order by c.last_message_at desc limit 100
+$$;
+
+create or replace function unread_total(p_user uuid)
+returns bigint language sql stable as $$
+  select count(*) from messages m join conversations c on c.id = m.conversation_id
+  where (c.curator_id = p_user or c.viewer_id = p_user) and m.sender_id <> p_user and m.read_at is null
+$$;
+
+revoke execute on function live_charge(uuid, uuid) from public, anon, authenticated;
+revoke execute on function viewer_reply(uuid, uuid, text) from public, anon, authenticated;
+revoke execute on function inbox(uuid) from public, anon, authenticated;
+revoke execute on function unread_total(uuid) from public, anon, authenticated;
+
+alter table streams enable row level security;
+alter table live_sessions enable row level security;
+alter table comments enable row level security;
+alter table conversations enable row level security;
+alter table messages enable row level security;
 
 -- ---------- storage buckets ----------
 insert into storage.buckets (id, name, public) values ('videos', 'videos', false) on conflict (id) do nothing;
