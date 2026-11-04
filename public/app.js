@@ -634,6 +634,7 @@ const LEGAL = {
     ['Adults only', 'Everyone appearing in content must be 18 or older and must have given clear consent to being filmed and published. We may ask for proof.'],
     ['Not allowed', 'Anyone under 18; non-consensual or secretly recorded content; violence, abuse, hate or harassment; illegal activity; content that infringes someone else\'s copyright or privacy.'],
     ['Your content', 'Upload only videos you own or have permission to share. Use accurate titles, descriptions and categories.'],
+    ['No contact details', 'Do not share phone numbers, emails, links or other apps (WhatsApp, Telegram, social handles) in messages, comments or live chat. Such messages are blocked automatically and repeated attempts may lead to suspension.'],
     ['Moderation', 'Videos may go live automatically and are reviewed afterwards. Viewers can report videos. We remove content that breaks these rules and may suspend the account.'],
     ['Reporting', 'Use the "Report this video" button on any video page.']]]
 };

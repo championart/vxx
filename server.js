@@ -881,6 +881,36 @@ const needLive = (req, res, next) => lkReady() ? next() : res.status(503).json({
 const userLimiter = (max, msg) => rateLimit({ windowMs: 60 * 1000, max, keyGenerator: req => req.user.id, standardHeaders: true, legacyHeaders: false, message: { error: msg || 'Slow down a little.' } });
 const cleanText = (t, max) => String(t || '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max);
 
+// ---------- contact-detail filter (phone numbers, emails, links, other apps) ----------
+const NUM_WORDS = { zero: 0, oh: 0, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9,
+  sifuri: 0, moja: 1, mbili: 2, tatu: 3, nne: 4, tano: 5, sita: 6, saba: 7, nane: 8, tisa: 9 };
+function hasContactInfo(text) {
+  let t = String(text || '').toLowerCase().normalize('NFKD').replace(/[̀-ͯ​-‏⁠﻿]/g, '');
+  // fullwidth/other digit forms -> ascii
+  t = t.replace(/[０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xfee0));
+  // number words -> digits ("zero seven one two")
+  t = t.replace(/[a-z]+/g, w => (w in NUM_WORDS ? ' ' + NUM_WORDS[w] + ' ' : w));
+  // letter o / l / i used as digits when sitting between digits ("07o2", "l23")
+  for (let i = 0; i < 3; i++) t = t.replace(/(\d)[o](?=\d)/g, '$10').replace(/(\d)[li](?=\d)/g, '$11');
+  // 9+ digits in a run, allowing separators between them
+  const runs = t.match(/\+?\d(?:[\s().\-_*,/|]*\d){8,}/g);
+  if (runs) return 'phone number';
+  const letters = t.replace(/\s+/g, ' ');
+  if (/[a-z0-9._+-]+\s*(?:@|\(at\)|\[at\]|\bat\b)\s*[a-z0-9-]+\s*(?:\.|\(dot\)|\[dot\]|\bdot\b)\s*[a-z]{2,}/.test(letters)) return 'email';
+  if (/https?:\/\/|www\.|\b[a-z0-9-]+\.(?:com|net|org|co|ke|me|io|app|link|ly|xyz|info|site)\b|\bwa\.me\b|\bt\.me\b/.test(letters)) return 'link';
+  if (/\b(?:whats\s?app|watsap|whatsap|telegram|signal app|snap\s?chat|insta(?:gram)?|facebook|messenger|imo|viber|wechat|tiktok|kik|skype|discord)\b/.test(letters)) return 'other app';
+  if (/(?:^|\s)@[a-z0-9_.]{3,}/.test(letters)) return 'handle';
+  if (/\b(?:call me|text me|sms me|phone me|my (?:number|digits|contact|phone|line)|nipigie|nitumie|namba yangu|nambari yangu|nicheki ?(?:kwa|on))\b/.test(letters)) return 'contact request';
+  return null;
+}
+async function rejectContact(req, res, body, where) {
+  const why = hasContactInfo(body);
+  if (!why) return false;
+  await audit(req.profile.id, 'contact_blocked', { where, kind: why, sample: body.slice(0, 80) });
+  res.status(422).json({ error: "Sharing contact details (phone numbers, emails, links or other apps) isn't allowed on VIDXX. Keep the chat here." });
+  return true;
+}
+
 async function endStream(id) {
   const { data: st } = await db.from('streams').select('id,room,status').eq('id', id).maybeSingle();
   if (!st || st.status === 'ended') return false;
@@ -1069,6 +1099,7 @@ app.post('/api/comments', auth, userLimiter(20, 'You\'re commenting too fast. Wa
   if (t.ended) return res.status(410).json({ error: 'This live has ended' });
   const body = cleanText((req.body || {}).body, 300);
   if (!body) return res.status(400).json({ error: 'Write something first' });
+  if (await rejectContact(req, res, body, 'comment')) return;
   const row = { user_id: req.profile.id, body, [t.kind === 'video' ? 'video_id' : 'stream_id']: t.id };
   const { data, error } = await db.from('comments').insert(row).select('id,body,created_at,user_id,user:profiles(username,avatar_url,account_type)').single();
   if (error) throw new Error(error.message);
@@ -1127,6 +1158,7 @@ app.post('/api/messages/send', auth, role('curator'), userLimiter(20, 'You\'re s
   const body = cleanText((req.body || {}).body, 1000);
   const name = String((req.body || {}).username || '').trim().replace(/^@/, '');
   if (!name || !body) return res.status(400).json({ error: 'Enter a username and a message' });
+  if (await rejectContact(req, res, body, 'message')) return;
   const { data: v } = await db.from('profiles').select('id,account_type,status').ilike('username', exactName(name)).maybeSingle();
   if (!v || v.account_type !== 'viewer' || v.status !== 'active') return res.status(404).json({ error: 'No viewer found with that username' });
   let { data: c } = await db.from('conversations').select('*').eq('curator_id', req.profile.id).eq('viewer_id', v.id).maybeSingle();
@@ -1162,6 +1194,7 @@ app.post('/api/conversations/:id/messages', auth, dmRoles, userLimiter(30, 'You\
   if (!c) return res.status(404).json({ error: 'Conversation not found' });
   const body = cleanText((req.body || {}).body, 1000);
   if (!body) return res.status(400).json({ error: 'Write a message first' });
+  if (await rejectContact(req, res, body, 'message')) return;
   if (req.profile.account_type === 'viewer') {
     const { data, error } = await db.rpc('viewer_reply', { p_viewer: req.profile.id, p_conv: c.id, p_body: body });
     if (error) throw new Error(error.message);

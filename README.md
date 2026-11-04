@@ -71,3 +71,6 @@ public/                index.html, style.css, app.js (core, viewer pages), creat
 
 ## Currency for visitors outside Kenya
 Visitors outside Kenya are auto-detected (Cloudflare country header, with an IP lookup fallback) and see prices in USD at the `usd_to_kes` rate (admin setting, default 129). They can switch KES/USD on the Buy Points page. Paystack is always charged in **KES**, so no USD account is needed; their card is converted by their bank. Unknown location defaults to KES. Run `supabase/migration_usd.sql` once (it is also included in `schema.sql`).
+
+## Contact-detail filter
+Messages, comments and live chat are checked on the server. Phone numbers (digits, spaced, spelled out in English/Swahili), emails, links, other apps (WhatsApp, Telegram, etc.) and @handles are rejected with a clear message, and each blocked attempt is recorded in Admin -> Audit as `contact_blocked`. No filter is perfect; determined users can still disguise numbers, so watch the audit log and suspend repeat offenders.
