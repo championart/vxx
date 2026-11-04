@@ -10,6 +10,8 @@ const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const num = n => Number(n || 0).toLocaleString('en-KE');
 const usd = n => '$' + Number(n || 0).toFixed(3);
+const usdC = c => "$" + (Number(c || 0) / 100).toFixed(2);
+const payAmt = p => kes(p.amount_kes);
 const kes = n => 'KES ' + Number(n || 0).toLocaleString('en-KE', { maximumFractionDigits: 0 });
 const date = d => d ? new Date(d).toLocaleDateString('en-KE', { day: 'numeric', month: 'short', year: 'numeric' }) : '';
 const dtime = d => d ? new Date(d).toLocaleString('en-KE', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '';
@@ -208,31 +210,37 @@ function videoCard(v) {
 }
 
 async function packagesSection(root) {
-  const d = await api('/packages');
-  root.innerHTML = d.packages.length ? `<div class="grid">${d.packages.map(p => `
+  let override = null; try { override = localStorage.getItem('cv_cur'); } catch (_) {}
+  const d = await api('/packages' + (override === 'KES' || override === 'USD' ? '?cur=' + override : ''));
+  const cur = d.currency;
+  const price = p => cur === 'USD' ? usdC(p.price_usd_cents) : kes(p.price_kes);
+  root.innerHTML = d.packages.length ? `<div class="row" style="justify-content:flex-end;margin-bottom:8px;gap:6px"><span class="muted small" style="align-self:center">Currency</span>
+    <button class="btn sm ${cur === 'KES' ? '' : 'alt'}" data-cur="KES">KES</button><button class="btn sm ${cur === 'USD' ? '' : 'alt'}" data-cur="USD">USD</button></div>
+    <div class="grid">${d.packages.map(p => `
     <button class="card pkg btn-pkg" data-id="${esc(p.id)}" style="cursor:pointer">
       <span class="n">${esc(p.name)}</span><span class="p">${num(p.points)} pts</span>
-      <span class="muted small">${kes(p.price_kes)}</span>
+      <span class="muted small">${price(p)}</span>
       <span class="muted small">≈ ${Math.floor(p.points / d.unlock_price)} video unlocks</span>
     </button>`).join('')}</div>
-    <p class="hint">Pay with M-Pesa, Visa/Mastercard, Apple Pay (where supported) or bank, securely through Paystack. Points are added only after the payment is verified.</p>` : '<div class="empty">No packages available right now.</div>';
+    <p class="hint">${cur === 'USD' ? `Prices shown in US dollars (1 USD = KES ${num(d.usd_to_kes)}). Your card is charged the equivalent in Kenyan shillings, securely through Paystack.` : 'Pay with M-Pesa, Visa/Mastercard, Apple Pay (where supported) or bank, securely through Paystack.'} Points are added only after the payment is verified.</p>` : '<div class="empty">No packages available right now.</div>';
+  $$('[data-cur]', root).forEach(b => b.onclick = () => { try { localStorage.setItem('cv_cur', b.dataset.cur); } catch (_) {} packagesSection(root).catch(e => toast(e.message, true)); });
   $$('.btn-pkg', root).forEach(b => b.onclick = () => {
     const p = d.packages.find(x => x.id === b.dataset.id);
     if (!p) return;
     const box = modal(`<h2 style="margin-top:0">Buy ${esc(p.name)}</h2>
-      <p class="muted" style="margin-top:0">${num(p.points)} points · ${kes(p.price_kes)}</p>
+ <p class="muted" style="margin-top:0">${num(p.points)} points · ${price(p)}${cur === 'USD' ? ` <span class="small">(card is charged ${kes(p.price_kes)} at 1 USD = KES ${num(d.usd_to_kes)})</span>` : ''}</p>
       <p style="font-weight:600;margin-bottom:8px">How do you want to pay?</p>
       <div class="stack">
-        <button class="btn alt block pay-opt" data-m="mpesa" style="justify-content:flex-start;text-align:left"><span><b>M-Pesa</b><br><small class="muted">Get a payment prompt on your phone</small></span></button>
+        ${cur === 'USD' ? '' : `<button class="btn alt block pay-opt" data-m="mpesa" style="justify-content:flex-start;text-align:left"><span><b>M-Pesa</b><br><small class="muted">Get a payment prompt on your phone</small></span></button>`}
         <button class="btn alt block pay-opt" data-m="card" style="justify-content:flex-start;text-align:left"><span><b>Card or Apple Pay</b><br><small class="muted">Visa, Mastercard, Apple Pay where supported</small></span></button>
-        <button class="btn alt block pay-opt" data-m="bank" style="justify-content:flex-start;text-align:left"><span><b>Bank</b><br><small class="muted">Pay from your bank account</small></span></button>
+        ${cur === 'USD' ? '' : `<button class="btn alt block pay-opt" data-m="bank" style="justify-content:flex-start;text-align:left"><span><b>Bank</b><br><small class="muted">Pay from your bank account</small></span></button>`}
       </div>
       <button class="btn ghost block" id="pay-cancel" style="margin-top:10px">Cancel</button>`);
     $('#pay-cancel', box).onclick = closeModal;
     const hosted = async (method) => {
       $$('.pay-opt', box).forEach(x => x.disabled = true);
       try {
-        const r = await api('/payments/init', { method: 'POST', body: { package_id: p.id, method } });
+        const r = await api('/payments/init', { method: 'POST', body: { package_id: p.id, method, currency: cur } });
         sessionStorage.setItem('cv_ref', r.reference);
         location.href = r.authorization_url;
       } catch (e) { toast(e.message, true); $$('.pay-opt', box).forEach(x => x.disabled = false); }
@@ -529,7 +537,7 @@ route('buy', ['viewer'], async ({ root }) => {
 
 async function paymentHistory(el) {
   const d = await api('/viewer/payments');
-  el.innerHTML = d.payments.length ? `<div class="tablewrap"><table><thead><tr><th>Date</th><th>Reference</th><th>Points</th><th>Amount</th><th>Status</th></tr></thead><tbody>${d.payments.map(p => `<tr><td>${dtime(p.created_at)}</td><td>${esc(p.reference)}</td><td>${num(p.points)}</td><td>${kes(p.amount_kes)}</td><td><span class="badge ${esc(p.status)}">${esc(p.status)}</span></td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">No payments yet.</div>';
+  el.innerHTML = d.payments.length ? `<div class="tablewrap"><table><thead><tr><th>Date</th><th>Reference</th><th>Points</th><th>Amount</th><th>Status</th></tr></thead><tbody>${d.payments.map(p => `<tr><td>${dtime(p.created_at)}</td><td>${esc(p.reference)}</td><td>${num(p.points)}</td><td>${payAmt(p)}</td><td><span class="badge ${esc(p.status)}">${esc(p.status)}</span></td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">No payments yet.</div>';
 }
 
 // --- own profile ---
@@ -612,6 +620,7 @@ const LEGAL = {
     ['What we collect', 'Username, email, gender, profile picture, account type, payment records (via Paystack, we do not store card or M-Pesa PINs), viewing and unlock history, and basic technical logs.'],
     ['Why we collect it', 'To run your account, process payments and payouts, prevent fraud, moderate content and meet legal duties.'],
     ['Who sees what', 'Your username, profile picture, gender, account type and join date are public. Your email, payments, points and earnings are private to you and authorised admins.'],
+    ['Location & currency', 'We use your IP address to estimate your country so we can show prices in KES (Kenya) or USD (elsewhere). You can switch currency yourself on the Buy Points page. We do not store your IP address for this.'],
     ['Sharing', 'We share data with service providers that run the platform (hosting, database, video storage, Paystack) and where the law requires. We do not sell personal data.'],
     ['Your rights', 'You may request access, correction or deletion of your data, subject to record-keeping duties (for example financial records), as provided under the Kenya Data Protection Act, 2019.'],
     ['Security & retention', 'Payments are verified server-side, access to videos uses short-lived signed links, and financial records are kept in an audit log. We keep data only as long as needed for the purposes above.']]],

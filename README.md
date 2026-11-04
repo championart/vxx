@@ -68,3 +68,6 @@ public/                index.html, style.css, app.js (core, viewer pages), creat
 - **Live:** curators go live from the browser (Go Live page). Viewers pay 30 points per minute (admin setting). Creators earn a per-viewer-minute amount (admin setting, default $0.001).
 - **Messages:** curators message any viewer for free. A viewer's first 2 replies in each conversation are free, then 3 points each (both admin settings). Viewers can block a creator.
 - **LiveKit setup (needed for Live):** create a free project at livekit.io, then add these environment variables on Render: `LIVEKIT_URL` (starts with `wss://`), `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`. Re-run `supabase/schema.sql` in Supabase (safe to re-run).
+
+## Currency for visitors outside Kenya
+Visitors outside Kenya are auto-detected (Cloudflare country header, with an IP lookup fallback) and see prices in USD at the `usd_to_kes` rate (admin setting, default 129). They can switch KES/USD on the Buy Points page. Paystack is always charged in **KES**, so no USD account is needed; their card is converted by their bank. Unknown location defaults to KES. Run `supabase/migration_usd.sql` once (it is also included in `schema.sql`).

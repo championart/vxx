@@ -126,7 +126,7 @@ async function verifyAndCredit(reference) {
   const d = v.data;
   if (d.status === 'success' && d.currency === 'KES') {
     const { data, error } = await db.rpc('credit_payment', {
-      p_reference: reference, p_channel: d.channel || null, p_amount_kes: Math.floor(d.amount / 100)
+      p_reference: reference, p_channel: d.channel || null, p_currency: d.currency, p_amount_minor: Math.floor(d.amount)
     });
     if (error) throw new Error(error.message);
     return data;
@@ -160,10 +160,43 @@ const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 30, message: { er
 // ---------- public ----------
 app.get('/api/health', (req, res) => res.json({ ok: true }));
 app.get('/api/config', (req, res) => res.json({ supabaseUrl: SUPABASE_URL, anonKey: SUPABASE_ANON_KEY, categories: CATEGORIES, live: !!(LIVEKIT_URL && LIVEKIT_API_KEY && LIVEKIT_API_SECRET) }));
+// ---------- currency: visitors outside Kenya see and pay in USD (rate = usd_to_kes setting) ----------
+const geoCache = new Map();
+async function countryOf(req) {
+  const h = String(req.headers['cf-ipcountry'] || req.headers['x-vercel-ip-country'] || '').toUpperCase();
+  if (/^[A-Z]{2}$/.test(h) && h !== 'XX' && h !== 'T1') return h;
+  const ip = String(req.ip || '').replace(/^::ffff:/, '');
+  if (!ip || /^(127\.|10\.|192\.168\.|::1)/.test(ip)) return null;
+  const hit = geoCache.get(ip);
+  if (hit && hit.t > Date.now() - 6 * 3600e3) return hit.c;
+  let c = null;
+  try {
+    const r = await fetch(`https://ipapi.co/${encodeURIComponent(ip)}/country/`, { signal: AbortSignal.timeout(2500) });
+    const t = (await r.text()).trim().toUpperCase();
+    if (r.ok && /^[A-Z]{2}$/.test(t)) c = t;
+  } catch (_) { /* unknown */ }
+  if (geoCache.size > 5000) geoCache.clear();
+  geoCache.set(ip, { c, t: Date.now() });
+  return c;
+}
+const usdCents = (kes, rate) => Math.max(50, Math.round(Number(kes) * 100 / rate));
+async function pickCurrency(req, s) {
+  const want = String((req.query && req.query.cur) || (req.body && req.body.currency) || '').toUpperCase();
+  if (want === 'KES' || want === 'USD') return want;
+  const c = await countryOf(req);
+  return c && c !== 'KE' ? 'USD' : 'KES';   // unknown location defaults to KES
+}
+app.get('/api/geo', wrap(async (req, res) => {
+  const country = await countryOf(req);
+  res.json({ country, currency: country && country !== 'KE' ? 'USD' : 'KES' });
+}));
 app.get('/api/packages', wrap(async (req, res) => {
   const { data } = await db.from('point_packages').select('id,name,points,price_kes').eq('active', true).order('sort');
   const s = await getSettings();
-  res.json({ packages: data || [], unlock_price: Number(s.unlock_price_points) });
+  const rate = Number(s.usd_to_kes) || 129;
+  const currency = await pickCurrency(req, s);
+  const packages = (data || []).map(p => ({ ...p, price_usd_cents: usdCents(p.price_kes, rate) }));
+  res.json({ packages, unlock_price: Number(s.unlock_price_points), currency, usd_to_kes: rate });
 }));
 
 // ---------- auth ----------
@@ -383,7 +416,7 @@ app.get('/api/viewer/history', auth, role('viewer'), wrap(async (req, res) => {
 }));
 
 app.get('/api/viewer/payments', auth, role('viewer'), wrap(async (req, res) => {
-  const { data } = await db.from('payments').select('reference,points,amount_kes,status,channel,created_at,paid_at')
+  const { data } = await db.from('payments').select('reference,points,amount_kes,currency,amount_minor,status,channel,created_at,paid_at')
     .eq('user_id', req.profile.id).order('created_at', { ascending: false }).limit(100);
   res.json({ payments: data || [] });
 }));
@@ -394,12 +427,16 @@ app.post('/api/payments/init', auth, role('viewer'), wrap(async (req, res) => {
   const { data: pkg } = await db.from('point_packages').select('*').eq('id', package_id).eq('active', true).maybeSingle();
   if (!pkg) return res.status(404).json({ error: 'Package not found' });
   const reference = 'CV' + Date.now().toString(36).toUpperCase() + crypto.randomBytes(5).toString('hex').toUpperCase();
+  const st = await getSettings();
+  const cur = await pickCurrency(req, st);
+  const minor = pkg.price_kes * 100;   // always charged to Paystack in KES; USD is display-only for visitors abroad
+  if (cur === 'USD' && ['mpesa', 'bank'].includes((req.body || {}).method)) return res.status(400).json({ error: 'M-Pesa and bank are only available in KES. Use a card or Apple Pay.' });
   const { error: ie } = await db.from('payments').insert({
-    reference, user_id: req.profile.id, package_id: pkg.id, points: pkg.points, amount_kes: pkg.price_kes
+    reference, user_id: req.profile.id, package_id: pkg.id, points: pkg.points, amount_kes: pkg.price_kes, currency: 'KES', amount_minor: minor
   });
   if (ie) throw new Error(ie.message);
   const body = {
-    email: req.user.email, amount: pkg.price_kes * 100, currency: 'KES', reference,
+    email: req.user.email, amount: minor, currency: 'KES', reference,
     callback_url: `${APP_URL || ''}/#/buy`,
     metadata: { user_id: req.profile.id, package: pkg.name, points: pkg.points }
   };
@@ -407,7 +444,7 @@ app.post('/api/payments/init', auth, role('viewer'), wrap(async (req, res) => {
   // enabled, fall back to fewer channels, then to Paystack's default list, rather than failing.
   const CHANNELS = { mpesa: ['mobile_money'], card: ['card', 'apple_pay'], bank: ['bank', 'bank_transfer'] };
   const envChans = PAYSTACK_CHANNELS ? PAYSTACK_CHANNELS.split(',').map(s => s.trim()).filter(Boolean) : null;
-  const chosen = CHANNELS[(req.body || {}).method] || envChans;
+  const chosen = cur === 'USD' ? ['card', 'apple_pay'] : (CHANNELS[(req.body || {}).method] || envChans);
   const attempts = chosen ? [chosen, chosen.slice(0, 1), null] : [null];
   let r;
   for (const ch of attempts) {
@@ -433,7 +470,7 @@ app.post('/api/payments/mpesa', auth, role('viewer'), wrap(async (req, res) => {
   if (!pkg) return res.status(404).json({ error: 'Package not found' });
   const reference = 'CV' + Date.now().toString(36).toUpperCase() + crypto.randomBytes(5).toString('hex').toUpperCase();
   const { error: ie } = await db.from('payments').insert({
-    reference, user_id: req.profile.id, package_id: pkg.id, points: pkg.points, amount_kes: pkg.price_kes, channel: 'mobile_money'
+    reference, user_id: req.profile.id, package_id: pkg.id, points: pkg.points, amount_kes: pkg.price_kes, currency: 'KES', amount_minor: pkg.price_kes * 100, channel: 'mobile_money'
   });
   if (ie) throw new Error(ie.message);
   const r = await paystack('POST', '/charge', {
@@ -752,7 +789,7 @@ app.put('/api/admin/packages/:id', ...admin, wrap(async (req, res) => {
 }));
 
 app.get('/api/admin/payments', ...admin, wrap(async (req, res) => {
-  const { data } = await db.from('payments').select('reference,points,amount_kes,status,channel,created_at,paid_at,user:profiles(username)')
+  const { data } = await db.from('payments').select('reference,points,amount_kes,currency,amount_minor,status,channel,created_at,paid_at,user:profiles(username)')
     .order('created_at', { ascending: false }).limit(200);
   res.json({ payments: data || [] });
 }));
