@@ -331,7 +331,7 @@ route('messages', ['viewer', 'curator'], async ({ root, args }) => {
   const isCur = S.me.account_type === 'curator';
   const d = await api('/conversations');
   root.innerHTML = `<div class="stack"><div class="row between"><h1 style="margin:0">Messages</h1>${isCur ? '<button class="btn sm" id="newmsg">New message</button>' : ''}</div>
-    ${isCur ? '<p class="muted small" style="margin:0">You can message any viewer for free. Find a viewer by username, or tap Message on their profile.</p>'
+    ${isCur ? `<p class="muted small" style="margin:0">You can message any viewer for free. Find a viewer by username, or tap Message on their profile. You also earn $${d.reply_batch_usd} for every ${d.reply_batch_size} paid replies from viewers.</p>`
       : `<p class="muted small" style="margin:0">Creators can message you for free. Your first ${d.free_replies} ${d.free_replies === 1 ? 'reply' : 'replies'} in each conversation are free, then each reply costs ${d.reply_cost} points.</p>`}
     <div id="inbox">${d.conversations.length ? d.conversations.map(c => `<a class="card msg-row" href="#/messages/${esc(c.id)}">${avatarHtml(c.other.username, c.other.avatar)}
       <div style="min-width:0;flex:1"><div class="row between" style="flex-wrap:nowrap"><b>${esc(c.other.username)}</b><span class="muted small">${ago(c.last_at)}</span></div>

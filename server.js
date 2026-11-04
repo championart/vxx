@@ -595,7 +595,7 @@ app.get('/api/creator/dashboard', auth, role('curator'), wrap(async (req, res) =
   }
   res.json({
     totals: {
-      live_minutes, live_streams: (myStreams || []).length,
+      live_minutes, live_streams: (myStreams || []).length, reply_progress: Number(req.profile.reply_progress) || 0,
       previews: videos.reduce((a, v) => a + v.previews, 0),
       paid_unlocks: videos.reduce((a, v) => a + v.paid, 0),
       total_views: videos.reduce((a, v) => a + v.previews + v.paid, 0),
@@ -605,7 +605,7 @@ app.get('/api/creator/dashboard', auth, role('curator'), wrap(async (req, res) =
       withdrawn
     },
     videos,
-    settings: { creator_rate_usd: Number(s.creator_rate_usd), min_withdrawal_usd: Number(s.min_withdrawal_usd), usd_to_kes: Number(s.usd_to_kes) }
+    settings: { reply_batch_size: Number(s.reply_batch_size), reply_batch_usd: Number(s.reply_batch_usd), creator_rate_usd: Number(s.creator_rate_usd), min_withdrawal_usd: Number(s.min_withdrawal_usd), usd_to_kes: Number(s.usd_to_kes) }
   });
 }));
 
@@ -711,14 +711,14 @@ app.put('/api/admin/videos/:id/price', ...admin, wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 
-const SETTING_KEYS = ['unlock_price_points', 'creator_rate_usd', 'min_withdrawal_usd', 'preview_seconds', 'usd_to_kes', 'video_lifetime_hours', 'auto_approve', 'live_points_per_minute', 'live_creator_rate_usd', 'message_reply_points', 'message_free_replies'];
+const SETTING_KEYS = ['unlock_price_points', 'creator_rate_usd', 'min_withdrawal_usd', 'preview_seconds', 'usd_to_kes', 'video_lifetime_hours', 'auto_approve', 'live_points_per_minute', 'live_creator_rate_usd', 'message_reply_points', 'message_free_replies', 'reply_batch_size', 'reply_batch_usd'];
 app.get('/api/admin/settings', ...admin, wrap(async (req, res) => res.json(await getSettings())));
 app.put('/api/admin/settings', ...admin, wrap(async (req, res) => {
   const body = req.body || {};
   for (const k of SETTING_KEYS) {
     if (body[k] === undefined) continue;
     const n = Number(body[k]);
-    const zeroOk = k === 'video_lifetime_hours' || k === 'auto_approve' || k === 'message_free_replies';
+    const zeroOk = k === 'video_lifetime_hours' || k === 'auto_approve' || k === 'message_free_replies' || k === 'reply_batch_size' || k === 'reply_batch_usd';
     if (zeroOk ? !(n >= 0) : !(n > 0)) return res.status(400).json({ error: `${k} must be ${zeroOk ? 'zero or a positive number' : 'a positive number'}` });
     await db.from('settings').upsert({ key: k, value: String(n), updated_at: new Date().toISOString() });
   }
@@ -1078,6 +1078,7 @@ app.get('/api/conversations', auth, dmRoles, wrap(async (req, res) => {
   const s = await getSettings();
   res.json({
     reply_cost: Number(s.message_reply_points), free_replies: Number(s.message_free_replies),
+    reply_batch_size: Number(s.reply_batch_size), reply_batch_usd: Number(s.reply_batch_usd),
     conversations: (data || []).map(r => ({
       id: r.conv_id, blocked: r.blocked, last_body: r.last_body, last_at: r.last_at, unread: Number(r.unread),
       other: { username: r.other_username, avatar: r.other_avatar ? publicUrl('avatars', r.other_avatar) : null }

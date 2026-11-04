@@ -240,7 +240,7 @@ end $$;
 create or replace function creator_balance(p_creator uuid)
 returns jsonb language sql stable as $$
   select jsonb_build_object(
-    'total_earned', coalesce(sum(amount_usd) filter (where reason in ('unlock','live','admin_adjust')), 0),
+    'total_earned', coalesce(sum(amount_usd) filter (where reason in ('unlock','live','reply','admin_adjust')), 0),
     'pending',      coalesce(-sum(amount_usd) filter (where reason = 'withdrawal_hold'), 0)
                     - coalesce(sum(amount_usd) filter (where reason = 'withdrawal_release'), 0),
     'available',    coalesce(sum(amount_usd), 0)
@@ -309,7 +309,7 @@ returns table(bucket date, unlocks bigint, earned numeric)
 language sql stable as $$
   select date_trunc(p_unit, created_at)::date, count(*), sum(amount_usd)
   from earnings_ledger
-  where creator_id = p_creator and reason in ('unlock','live') and created_at >= p_since
+  where creator_id = p_creator and reason in ('unlock','live','reply') and created_at >= p_since
   group by 1 order by 1
 $$;
 
@@ -326,7 +326,7 @@ returns jsonb language sql stable as $$
     'previews_total',  (select count(*) from video_views where kind = 'preview'),
     'paid_unlocks',    (select count(*) from video_unlocks),
     'revenue_kes',     (select coalesce(sum(amount_kes), 0) from payments where status = 'success'),
-    'creator_earned_usd', (select coalesce(sum(amount_usd), 0) from earnings_ledger where reason in ('unlock','live','admin_adjust')),
+    'creator_earned_usd', (select coalesce(sum(amount_usd), 0) from earnings_ledger where reason in ('unlock','live','reply','admin_adjust')),
     'withdrawals_pending', (select count(*) from withdrawals where status = 'pending'),
     'open_reports',    (select count(*) from reports where status = 'open')
   )
@@ -366,7 +366,9 @@ insert into settings (key, value) values
   ('live_points_per_minute', '30'),     -- points a viewer pays per minute of live
   ('live_creator_rate_usd', '0.001'),   -- creator earning per paid viewer-minute
   ('message_reply_points', '3'),        -- points per viewer reply after the free ones
-  ('message_free_replies', '2')         -- free viewer replies per conversation
+  ('message_free_replies', '2'),        -- free viewer replies per conversation
+  ('reply_batch_size', '10'),           -- creator earns a reward for every this-many paid viewer replies
+  ('reply_batch_usd', '0.01')           -- ...of this many USD
 on conflict (key) do nothing;
 
 -- allow the new ledger reasons (works on a fresh or an existing database)
@@ -376,8 +378,10 @@ alter table points_ledger add constraint points_ledger_reason_check
 alter table points_ledger add column if not exists ref_stream uuid;
 alter table earnings_ledger drop constraint if exists earnings_ledger_reason_check;
 alter table earnings_ledger add constraint earnings_ledger_reason_check
-  check (reason in ('unlock','live','withdrawal_hold','withdrawal_release','admin_adjust'));
+  check (reason in ('unlock','live','reply','withdrawal_hold','withdrawal_release','admin_adjust'));
 alter table earnings_ledger add column if not exists ref_stream uuid;
+alter table earnings_ledger add column if not exists ref_conversation uuid;
+alter table profiles add column if not exists reply_progress int not null default 0;
 
 create table if not exists streams (
   id uuid primary key default gen_random_uuid(),
@@ -499,6 +503,7 @@ end $$;
 create or replace function viewer_reply(p_viewer uuid, p_conv uuid, p_body text)
 returns jsonb language plpgsql security definer as $$
 declare c conversations; free int; cost int := 0; bal bigint; newbal bigint; mid bigint;
+        batch int; prog int;
 begin
   select * into c from conversations where id = p_conv for update;
   if not found or c.viewer_id <> p_viewer then
@@ -518,6 +523,19 @@ begin
   end if;
   insert into messages(conversation_id, sender_id, body, cost) values (p_conv, p_viewer, p_body, cost) returning id into mid;
   update conversations set viewer_replies = viewer_replies + 1, last_message_at = now() where id = p_conv;
+
+  -- creator reward: every N PAID replies (points actually spent) earns the creator a fixed amount.
+  -- Free replies don't count, so fake accounts can't farm it.
+  if cost > 0 then
+    batch := setting_num('reply_batch_size')::int;
+    update profiles set reply_progress = reply_progress + 1
+      where id = c.curator_id and account_type = 'curator' returning reply_progress into prog;
+    if prog is not null and batch > 0 and prog >= batch then
+      update profiles set reply_progress = reply_progress - batch where id = c.curator_id;
+      insert into earnings_ledger(creator_id, amount_usd, reason, ref_conversation, ref_viewer)
+        values (c.curator_id, setting_num('reply_batch_usd'), 'reply', p_conv, p_viewer);
+    end if;
+  end if;
   return jsonb_build_object('ok', true, 'id', mid, 'cost', cost, 'balance', newbal,
     'free_left', greatest(free - (c.viewer_replies + 1), 0));
 end $$;

@@ -113,6 +113,8 @@ const views = {
       <div class="field"><label>Live: creator earning per paid viewer-minute (USD)</label><input type="number" step="0.0001" min="0" id="s9" value="${esc(s.live_creator_rate_usd || 0.001)}"></div>
       <div class="field"><label>Messages: free viewer replies per conversation</label><input type="number" min="0" id="s10" value="${esc(s.message_free_replies == null ? 2 : s.message_free_replies)}"></div>
       <div class="field"><label>Messages: points per viewer reply after the free ones</label><input type="number" min="1" id="s11" value="${esc(s.message_reply_points || 3)}"></div>
+      <div class="field"><label>Reply reward: paid viewer replies needed</label><input type="number" min="0" id="s12" value="${esc(s.reply_batch_size == null ? 10 : s.reply_batch_size)}"><div class="hint">Every this-many paid replies earn the creator the amount below. 0 turns it off. Free replies don't count.</div></div>
+      <div class="field"><label>Reply reward: USD per batch</label><input type="number" step="0.001" min="0" id="s13" value="${esc(s.reply_batch_usd == null ? 0.01 : s.reply_batch_usd)}"></div>
       <div class="field"><label>USD → KES rate (for payouts)</label><input type="number" step="0.01" min="1" id="s5" value="${esc(s.usd_to_kes)}"></div>
       <button class="btn">Save settings</button></form>
       <div class="card"><h2 style="margin-top:0">Points packages</h2>
@@ -121,7 +123,7 @@ const views = {
         <form class="row" id="nf" style="margin-top:12px"><input type="text" id="nn" placeholder="Name" style="width:120px"><input type="number" id="np" placeholder="Points" style="width:110px"><input type="number" id="nc" placeholder="Price KES" style="width:110px"><button class="btn sm">Add package</button></form></div></div>`;
     $('#sf').onsubmit = async e => {
       e.preventDefault();
-      try { await api('/admin/settings', { method: 'PUT', body: { unlock_price_points: $('#s1').value, creator_rate_usd: $('#s2').value, min_withdrawal_usd: $('#s3').value, preview_seconds: $('#s4').value, usd_to_kes: $('#s5').value, video_lifetime_hours: $('#s6').value, auto_approve: $('#s7').value, live_points_per_minute: $('#s8').value, live_creator_rate_usd: $('#s9').value, message_free_replies: $('#s10').value, message_reply_points: $('#s11').value } }); toast('Settings saved'); }
+      try { await api('/admin/settings', { method: 'PUT', body: { unlock_price_points: $('#s1').value, creator_rate_usd: $('#s2').value, min_withdrawal_usd: $('#s3').value, preview_seconds: $('#s4').value, usd_to_kes: $('#s5').value, video_lifetime_hours: $('#s6').value, auto_approve: $('#s7').value, live_points_per_minute: $('#s8').value, live_creator_rate_usd: $('#s9').value, message_free_replies: $('#s10').value, message_reply_points: $('#s11').value, reply_batch_size: $('#s12').value, reply_batch_usd: $('#s13').value } }); toast('Settings saved'); }
       catch (er) { toast(er.message, true); }
     };
     $$('.ps', el).forEach(b => b.onclick = async () => {
