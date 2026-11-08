@@ -3,7 +3,7 @@
 'use strict';
 const { api, route, esc, num, usd, kes, date, dtime, toast, modal, closeModal, loading, errBox, avatarHtml, busy, $, $$ } = window.CV;
 const badge = s => `<span class="badge ${esc(s)}">${esc(s)}</span>`;
-const TABS = [['overview', 'Overview'], ['users', 'Users'], ['videos', 'Videos'], ['live', 'Live'], ['payments', 'Payments'], ['withdrawals', 'Withdrawals'], ['settings', 'Pricing & settings'], ['reports', 'Reports'], ['audit', 'Audit log']];
+const TABS = [['overview', 'Overview'], ['users', 'Users'], ['videos', 'Videos'], ['live', 'Live'], ['payments', 'Payments'], ['withdrawals', 'Withdrawals'], ['settings', 'Pricing & settings'], ['team', 'Team & demo'], ['reports', 'Reports'], ['audit', 'Audit log']];
 
 route('admin', ['admin'], async ({ root }) => {
   root.innerHTML = `<h1>Admin dashboard</h1><div class="tabs" id="atabs">${TABS.map(([k, l], i) => `<button data-t="${k}" class="${i ? '' : 'on'}">${l}</button>`).join('')}</div><div id="abody"></div>`;
@@ -100,6 +100,39 @@ const views = {
     });
   },
 
+  async team(el) {
+    const d = await api('/admin/team');
+    const s = d.settings;
+    el.innerHTML = `<div class="stack">
+      <div class="card"><h2 style="margin-top:0">VIDXX Team account</h2>
+        <p class="muted small" style="margin-top:0">An official, clearly labelled account that sends new viewers a few welcome messages. Replies to it are always free. It cannot earn money and does not appear in rankings.</p>
+        ${d.team ? `<p>Account: <b>${esc(d.team.username)}</b> <span class="badge ok">Active</span></p>` : '<button class="btn" id="mkteam">Create the VIDXX Team account</button>'}
+        <form id="wf" class="stack">
+          <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="w1" ${s.welcome_enabled ? 'checked' : ''}> Send welcome messages to new viewers</label>
+          <div class="field"><label>Seconds after a viewer joins before the first message</label><input type="number" min="0" id="w2" value="${esc(s.welcome_delay_seconds)}"></div>
+          <div class="field"><label>Seconds between messages</label><input type="number" min="1" id="w3" value="${esc(s.welcome_gap_seconds)}"></div>
+          <div class="field"><label>Messages (separate each message with a line containing only ---, up to 4)</label><textarea id="w4" rows="9" maxlength="3000">${esc(s.welcome_text)}</textarea></div>
+          <button class="btn">Save welcome settings</button></form></div>
+      <div class="card"><h2 style="margin-top:0">Demo accounts</h2>
+        <p class="muted small" style="margin-top:0">Labelled sample profiles so Creators is not empty at the start. Viewers see a "Demo account" badge. They cannot be followed or messaged, never earn, and always appear after real creators. Switch them off or delete them when real creators join.</p>
+        <label style="display:flex;gap:8px;align-items:center;margin-bottom:10px"><input type="checkbox" id="d1" ${s.demo_enabled ? 'checked' : ''}> Show demo accounts to viewers</label>
+        <form id="df" class="stack"><div class="field"><label>Usernames to create (separated by spaces, commas or new lines, up to 40; letters, numbers, underscore)</label><textarea id="d2" rows="3" placeholder="Amina_K Wanjiru_L Njeri_M"></textarea></div>
+          <div class="field"><label>Gender shown</label><select id="d3"><option value="female">Female</option><option value="male">Male</option><option value="transgender">Transgender</option></select></div>
+          <button class="btn alt">Create demo accounts</button></form>
+        <div id="dl" style="margin-top:12px">${d.demo.length ? `<div class="tablewrap"><table><thead><tr><th>Username</th><th>Created</th><th></th></tr></thead><tbody>${d.demo.map(p => `<tr><td>${esc(p.username)}</td><td>${date(p.created_at)}</td><td><button class="btn alt sm dd" data-id="${esc(p.id)}">Delete</button></td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">No demo accounts yet.</div>'}</div></div></div>`;
+    const reload = () => views.team(el);
+    const mk = $('#mkteam'); if (mk) mk.onclick = async () => { busy(mk, true, 'Creating…'); try { await api('/admin/team/create', { method: 'POST' }); toast('Team account created'); reload(); } catch (e) { toast(e.message, true); busy(mk, false); } };
+    $('#wf').onsubmit = async e => { e.preventDefault(); try { await api('/admin/welcome', { method: 'PUT', body: { welcome_enabled: $('#w1').checked ? 1 : 0, welcome_delay_seconds: $('#w2').value, welcome_gap_seconds: $('#w3').value, welcome_text: $('#w4').value } }); toast('Saved'); } catch (er) { toast(er.message, true); } };
+    $('#d1').onchange = async () => { try { await api('/admin/welcome', { method: 'PUT', body: { demo_enabled: $('#d1').checked ? 1 : 0 } }); toast($('#d1').checked ? 'Demo accounts shown' : 'Demo accounts hidden'); } catch (er) { toast(er.message, true); } };
+    $('#df').onsubmit = async e => {
+      e.preventDefault();
+      try {
+        const r = await api('/admin/demo', { method: 'POST', body: { names: $('#d2').value, gender: $('#d3').value } });
+        toast(`Created ${r.created.length}` + (r.skipped.length ? `, skipped: ${r.skipped.join(', ')}` : ''), r.created.length === 0); reload();
+      } catch (er) { toast(er.message, true); }
+    };
+    $$('.dd', el).forEach(b => b.onclick = async () => { if (!confirm('Delete this demo account?')) return; try { await api('/admin/demo/' + encodeURIComponent(b.dataset.id), { method: 'DELETE' }); reload(); } catch (er) { toast(er.message, true); } });
+  },
   async settings(el) {
     const [s, pk] = await Promise.all([api('/admin/settings'), api('/admin/packages')]);
     el.innerHTML = `<div class="stack" style="max-width:760px"><form class="card" id="sf"><h2 style="margin-top:0">Platform settings</h2>

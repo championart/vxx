@@ -47,7 +47,7 @@ const publicUrl = (bucket, p) => (p ? `${SUPABASE_URL}/storage/v1/object/public/
 const avatarOf = p => publicUrl('avatars', p.avatar_url);
 const shapeProfile = p => ({
   id: p.id, username: p.username, gender: p.gender, account_type: p.account_type,
-  avatar: avatarOf(p), created_at: p.created_at, status: p.status
+  avatar: avatarOf(p), created_at: p.created_at, status: p.status, is_demo: !!p.is_demo, is_system: !!p.is_system
 });
 async function getSettings() {
   const { data } = await db.from('settings').select('key,value');
@@ -257,10 +257,43 @@ app.post('/api/refresh', wrap(async (req, res) => {
   res.json({ access_token: data.session.access_token, refresh_token: data.session.refresh_token });
 }));
 
+
+// ---------- VIDXX Team welcome messages (automated, clearly labelled, always free to reply) ----------
+async function ensureConversation(curatorId, viewerId) {
+  let { data: c } = await db.from('conversations').select('*').eq('curator_id', curatorId).eq('viewer_id', viewerId).maybeSingle();
+  if (c) return c;
+  const ins = await db.from('conversations').insert({ curator_id: curatorId, viewer_id: viewerId }).select().single();
+  if (!ins.error) return ins.data;
+  const again = await db.from('conversations').select('*').eq('curator_id', curatorId).eq('viewer_id', viewerId).maybeSingle();
+  if (!again.data) throw new Error(ins.error.message);
+  return again.data;
+}
+async function sendWelcome(viewerId) {
+  const s = await getSettings();
+  if (Number(s.welcome_enabled) !== 1) return;
+  const { data: team } = await db.from('profiles').select('id').eq('is_system', true).limit(1).maybeSingle();
+  if (!team) return;   // no Team account yet: do not mark as welcomed
+  const { data: claimed } = await db.from('profiles').update({ welcomed_at: new Date().toISOString() }).eq('id', viewerId).is('welcomed_at', null).select('id');
+  if (!claimed || !claimed.length) return;
+  const texts = String(s.welcome_text || '').split(/\n?---\n?/).map(t => t.trim().slice(0, 1000)).filter(Boolean).slice(0, 4);
+  if (!texts.length) return;
+  const c = await ensureConversation(team.id, viewerId);
+  const delay = Math.max(0, Number(s.welcome_delay_seconds) || 0) * 1000, gap = Math.max(1, Number(s.welcome_gap_seconds) || 10) * 1000;
+  texts.forEach((body, i) => setTimeout(async () => {
+    try {
+      await db.from('messages').insert({ conversation_id: c.id, sender_id: team.id, body, cost: 0 });
+      await db.from('conversations').update({ last_message_at: new Date().toISOString() }).eq('id', c.id);
+    } catch (e) { console.error('welcome send', e.message); }
+  }, delay + i * gap));
+}
+
 app.get('/api/me', auth, wrap(async (req, res) => {
   const p = req.profile;
   const out = { ...shapeProfile(p), email: req.user.email };
-  if (p.account_type === 'viewer') out.points_balance = p.points_balance;
+  if (p.account_type === 'viewer') {
+    out.points_balance = p.points_balance;
+    if (p.welcomed_at === null) sendWelcome(p.id).catch(e => console.error('welcome', e.message));
+  }
   if (p.account_type === 'curator') {
     const { data } = await db.rpc('creator_balance', { p_creator: p.id });
     out.balance = data;
@@ -314,8 +347,9 @@ async function followedIds(viewerId) {
   return (data || []).map(x => x.creator_id);
 }
 app.post('/api/follow/:username', auth, role('viewer'), rateLimit({ windowMs: 60 * 1000, max: 40, keyGenerator: req => req.user.id, message: { error: 'Slow down a little.' } }), wrap(async (req, res) => {
-  const { data: c } = await db.from('profiles').select('id,account_type,status').ilike('username', exactName(req.params.username)).maybeSingle();
+  const { data: c } = await db.from('profiles').select('id,account_type,status,is_demo,is_system').ilike('username', exactName(req.params.username)).maybeSingle();
   if (!c || c.account_type !== 'curator' || c.status === 'deactivated') return res.status(404).json({ error: 'Creator not found' });
+  if (c.is_demo || c.is_system) return res.status(400).json({ error: 'Demo and team accounts can\'t be followed' });
   const on = (req.body || {}).follow !== false;
   if (on) {
     const { error } = await db.from('follows').upsert({ follower_id: req.profile.id, creator_id: c.id }, { onConflict: 'follower_id,creator_id', ignoreDuplicates: true });
@@ -335,14 +369,16 @@ app.get('/api/following', auth, role('viewer'), wrap(async (req, res) => {
 app.get('/api/creators', auth, role('viewer', 'admin'), wrap(async (req, res) => {
   const { data, error } = await db.rpc('creator_directory');
   if (error) throw new Error(error.message);
+  const s = await getSettings();
   const mine = req.profile.account_type === 'viewer' ? new Set(await followedIds(req.profile.id)) : new Set();
   const all = req.query.all === '1';
-  const list = (data || [])
-    .filter(c => all || c.live || Number(c.videos) > 0)
+  const shape = c => ({ username: c.username, avatar: avatarOf(c), followers: Number(c.followers), videos: Number(c.videos), live: !!c.live, following: mine.has(c.id), demo: !!c.demo });
+  const real = (data || []).filter(c => !c.demo && (all || c.live || Number(c.videos) > 0))
     .sort((a, b) => Number(b.followers) - Number(a.followers) || Number(b.videos) - Number(a.videos) || String(a.username).localeCompare(b.username))
-    .slice(0, 200)
-    .map(c => ({ username: c.username, avatar: avatarOf(c), followers: Number(c.followers), videos: Number(c.videos), live: !!c.live, following: mine.has(c.id) }));
-  res.json({ creators: list });
+    .slice(0, 200).map(shape);
+  // labelled demo accounts always come after real creators, and only while the admin switch is on
+  const demo = Number(s.demo_enabled) === 1 ? (data || []).filter(c => c.demo).sort((a, b) => String(a.username).localeCompare(b.username)).slice(0, 60).map(shape) : [];
+  res.json({ creators: [...real, ...demo] });
 }));
 
 // ---------- videos: browse ----------
@@ -820,6 +856,73 @@ app.put('/api/admin/settings', ...admin, wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 
+
+// ---------- admin: VIDXX Team account, welcome messages, labelled demo accounts ----------
+const WELCOME_KEYS = { welcome_enabled: 0, welcome_delay_seconds: 0, welcome_gap_seconds: 1, demo_enabled: 0 };
+async function makeSpecialAccount(username, flag, gender) {
+  const email = `${flag === 'is_system' ? 'team' : 'demo'}.${crypto.randomBytes(6).toString('hex')}@vidxx-internal.example`;
+  const cu = await db.auth.admin.createUser({ email, password: crypto.randomBytes(24).toString('hex'), email_confirm: true });
+  if (cu.error) throw new Error(cu.error.message);
+  const id = cu.data.user.id;
+  const { error } = await db.from('profiles').insert({ id, username, gender, account_type: 'curator', is_adult_confirmed: true, [flag]: true, welcomed_at: new Date().toISOString() });
+  if (error) { await db.auth.admin.deleteUser(id); throw new Error(error.message); }
+  return id;
+}
+app.get('/api/admin/team', ...admin, wrap(async (req, res) => {
+  const { data: team } = await db.from('profiles').select('id,username').eq('is_system', true).maybeSingle();
+  const { data: demo } = await db.from('profiles').select('id,username,created_at').eq('is_demo', true).order('username');
+  const s = await getSettings();
+  res.json({
+    team: team || null, demo: demo || [],
+    settings: { welcome_enabled: Number(s.welcome_enabled), welcome_delay_seconds: Number(s.welcome_delay_seconds), welcome_gap_seconds: Number(s.welcome_gap_seconds), demo_enabled: Number(s.demo_enabled), welcome_text: s.welcome_text || '' }
+  });
+}));
+app.post('/api/admin/team/create', ...admin, wrap(async (req, res) => {
+  const { data: have } = await db.from('profiles').select('id').eq('is_system', true).maybeSingle();
+  if (have) return res.status(409).json({ error: 'The VIDXX Team account already exists' });
+  const { data: taken } = await db.from('profiles').select('id').ilike('username', 'VIDXX_Team').maybeSingle();
+  if (taken) return res.status(409).json({ error: 'The username VIDXX_Team is already taken' });
+  const id = await makeSpecialAccount('VIDXX_Team', 'is_system', 'male');
+  await audit(req.profile.id, 'team_account_created', { id });
+  res.json({ ok: true });
+}));
+app.put('/api/admin/welcome', ...admin, wrap(async (req, res) => {
+  const b = req.body || {};
+  for (const [k, min] of Object.entries(WELCOME_KEYS)) {
+    if (b[k] === undefined) continue;
+    const n = Number(b[k]);
+    if (!(n >= min)) return res.status(400).json({ error: `${k} is invalid` });
+    await db.from('settings').upsert({ key: k, value: String(k.endsWith('enabled') ? (n ? 1 : 0) : Math.floor(n)), updated_at: new Date().toISOString() });
+  }
+  if (b.welcome_text !== undefined) {
+    const t = String(b.welcome_text).slice(0, 3000);
+    await db.from('settings').upsert({ key: 'welcome_text', value: t, updated_at: new Date().toISOString() });
+  }
+  await audit(req.profile.id, 'welcome_settings_changed', { keys: Object.keys(b) });
+  res.json({ ok: true });
+}));
+app.post('/api/admin/demo', ...admin, wrap(async (req, res) => {
+  const names = String((req.body || {}).names || '').split(/[\s,]+/).map(x => x.trim()).filter(Boolean).slice(0, 40);
+  const gender = ['female', 'male', 'transgender'].includes((req.body || {}).gender) ? req.body.gender : 'female';
+  const created = [], skipped = [];
+  for (const n of names) {
+    if (!/^[A-Za-z0-9_]{3,20}$/.test(n)) { skipped.push(n + ' (invalid)'); continue; }
+    const { data: taken } = await db.from('profiles').select('id').ilike('username', exactName(n)).maybeSingle();
+    if (taken) { skipped.push(n + ' (taken)'); continue; }
+    try { await makeSpecialAccount(n, 'is_demo', gender); created.push(n); } catch (e) { skipped.push(n + ' (' + e.message + ')'); }
+  }
+  await audit(req.profile.id, 'demo_accounts_created', { created, skipped });
+  res.json({ created, skipped });
+}));
+app.delete('/api/admin/demo/:id', ...admin, wrap(async (req, res) => {
+  const { data: p } = await db.from('profiles').select('id,is_demo').eq('id', req.params.id).maybeSingle();
+  if (!p || !p.is_demo) return res.status(404).json({ error: 'Demo account not found' });
+  const r = await db.auth.admin.deleteUser(p.id);
+  if (r.error) throw new Error(r.error.message);
+  await audit(req.profile.id, 'demo_account_deleted', { id: p.id });
+  res.json({ ok: true });
+}));
+
 app.get('/api/admin/packages', ...admin, wrap(async (req, res) => {
   const { data } = await db.from('point_packages').select('*').order('sort');
   res.json({ packages: data || [] });
@@ -1188,10 +1291,10 @@ async function getConv(id, me) {
 }
 async function convMeta(c, me, s) {
   const otherId = me.account_type === 'curator' ? c.viewer_id : c.curator_id;
-  const { data: o } = await db.from('profiles').select('username,avatar_url,account_type').eq('id', otherId).single();
+  const { data: o } = await db.from('profiles').select('username,avatar_url,account_type,is_system').eq('id', otherId).single();
   const free = Number(s.message_free_replies);
   return {
-    id: c.id, blocked: c.blocked, other: { username: o.username, avatar: avatarOf(o), account_type: o.account_type },
+    id: c.id, blocked: c.blocked, curator_blocked: !!c.curator_blocked, other: { username: o.username, avatar: avatarOf(o), account_type: o.account_type, system: !!o.is_system },
     reply_cost: Number(s.message_reply_points), free_left: Math.max(free - c.viewer_replies, 0)
   };
 }
@@ -1276,12 +1379,14 @@ app.get('/api/conversations', auth, dmRoles, wrap(async (req, res) => {
   const { data, error } = await db.rpc('inbox', { p_user: req.profile.id });
   if (error) throw new Error(error.message);
   const s = await getSettings();
+  const { data: sysRows } = await db.from('profiles').select('id').eq('is_system', true);
+  const sysIds = new Set((sysRows || []).map(x => x.id));
   res.json({
     reply_cost: Number(s.message_reply_points), free_replies: Number(s.message_free_replies),
     reply_batch_size: Number(s.reply_batch_size), reply_batch_usd: Number(s.reply_batch_usd),
     conversations: (data || []).map(r => ({
       id: r.conv_id, blocked: r.blocked, last_body: r.last_body, last_at: r.last_at, unread: Number(r.unread),
-      other: { username: r.other_username, avatar: r.other_avatar ? publicUrl('avatars', r.other_avatar) : null }
+      other: { username: r.other_username, avatar: r.other_avatar ? publicUrl('avatars', r.other_avatar) : null, system: sysIds.has(r.other_id) }
     }))
   });
 }));
@@ -1303,6 +1408,7 @@ app.post('/api/messages/send', auth, role('curator'), userLimiter(20, 'You\'re s
     } else c = ins.data;
   }
   if (c.blocked) return res.status(403).json({ error: 'This viewer has blocked messages from you' });
+  if (c.curator_blocked) return res.status(403).json({ error: 'You blocked this viewer. Unblock them first.' });
   const { error } = await db.from('messages').insert({ conversation_id: c.id, sender_id: req.profile.id, body, cost: 0 });
   if (error) throw new Error(error.message);
   await db.from('conversations').update({ last_message_at: new Date().toISOString() }).eq('id', c.id);
@@ -1322,6 +1428,11 @@ app.get('/api/conversations/:id/messages', auth, dmRoles, wrap(async (req, res) 
   res.json({ ...meta, image_points: Number(s.media_image_points), video_points: Number(s.media_video_points), messages: await Promise.all(data.map(m => shapeMessage(m, req.profile, us))) });
 }));
 
+function replyFail(res, data) {
+  if (data.error === 'insufficient_points') return res.status(402).json({ ...data, error: `Replying costs ${data.needed} points and you have ${data.balance}.` });
+  if (data.error === 'blocked_by_creator') return res.status(403).json({ ...data, error: 'This creator is not accepting messages from you.' });
+  return res.status(404).json({ ...data, error: 'Conversation not found' });
+}
 app.post('/api/conversations/:id/messages', auth, dmRoles, userLimiter(30, 'You\'re sending messages too fast.'), wrap(async (req, res) => {
   const c = await getConv(req.params.id, req.profile);
   if (!c) return res.status(404).json({ error: 'Conversation not found' });
@@ -1333,10 +1444,11 @@ app.post('/api/conversations/:id/messages', auth, dmRoles, userLimiter(30, 'You\
   if (req.profile.account_type === 'viewer') {
     const { data, error } = await db.rpc('viewer_reply', { p_viewer: req.profile.id, p_conv: c.id, p_body: body });
     if (error) throw new Error(error.message);
-    if (!data.ok) return res.status(data.error === 'insufficient_points' ? 402 : 404).json({ ...data, error: data.error === 'insufficient_points' ? `Replying costs ${data.needed} points and you have ${data.balance}.` : 'Conversation not found' });
+    if (!data.ok) return replyFail(res, data);
     return res.json(data);
   }
   if (c.blocked) return res.status(403).json({ error: 'This viewer has blocked messages from you' });
+  if (c.curator_blocked) return res.status(403).json({ error: 'You blocked this viewer. Unblock them first.' });
   let extra = {};
   if (media) {
     const chk = await checkMedia(req, media);
@@ -1347,6 +1459,39 @@ app.post('/api/conversations/:id/messages', auth, dmRoles, userLimiter(30, 'You\
   if (error) throw new Error(error.message);
   await db.from('conversations').update({ last_message_at: new Date().toISOString() }).eq('id', c.id);
   res.json({ ok: true, cost: 0 });
+}));
+
+app.post('/api/conversations/start', auth, role('viewer'), userLimiter(10, 'Too many new messages. Wait a moment.'), wrap(async (req, res) => {
+  const body = cleanText((req.body || {}).body, 1000);
+  const name = String((req.body || {}).username || '').trim().replace(/^@/, '');
+  if (!name || !body) return res.status(400).json({ error: 'Write a message first' });
+  if (await rejectContact(req, res, body, 'message')) return;
+  const { data: cur } = await db.from('profiles').select('id,account_type,status,is_demo,is_system').ilike('username', exactName(name)).maybeSingle();
+  if (!cur || cur.account_type !== 'curator' || cur.status !== 'active') return res.status(404).json({ error: 'Creator not found' });
+  if (cur.is_demo || cur.is_system) return res.status(400).json({ error: 'This account can\'t be messaged' });
+  const { data: existing } = await db.from('conversations').select('*').eq('curator_id', cur.id).eq('viewer_id', req.profile.id).maybeSingle();
+  if (!existing) {
+    const since = new Date(Date.now() - 24 * 3600000).toISOString();
+    const { count } = await db.from('conversations').select('id', { count: 'exact', head: true }).eq('viewer_id', req.profile.id).gt('created_at', since);
+    if ((count || 0) >= 20) return res.status(429).json({ error: 'You can start up to 20 new conversations per day.' });
+  }
+  const c = existing || await ensureConversation(cur.id, req.profile.id);
+  if (c.curator_blocked) return res.status(403).json({ error: 'This creator is not accepting messages from you.' });
+  if (c.blocked) return res.status(403).json({ error: 'You blocked this creator. Unblock them in Messages first.' });
+  const { data, error } = await db.rpc('viewer_reply', { p_viewer: req.profile.id, p_conv: c.id, p_body: body });
+  if (error) throw new Error(error.message);
+  if (!data.ok) {
+    if (!existing) await db.from('conversations').delete().eq('id', c.id);   // don't leave an empty conversation behind
+    return replyFail(res, data);
+  }
+  res.json({ ...data, conversation_id: c.id });
+}));
+
+app.post('/api/conversations/:id/curator-block', auth, role('curator'), wrap(async (req, res) => {
+  const c = await getConv(req.params.id, req.profile);
+  if (!c || c.curator_id !== req.profile.id) return res.status(404).json({ error: 'Conversation not found' });
+  await db.from('conversations').update({ curator_blocked: (req.body || {}).blocked !== false }).eq('id', c.id);
+  res.json({ ok: true });
 }));
 
 app.post('/api/conversations/:id/block', auth, role('viewer'), wrap(async (req, res) => {

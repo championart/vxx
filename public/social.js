@@ -326,15 +326,38 @@ function composeMessage(username) {
   };
 }
 
+async function composeToCreator(username) {
+  let info = null;
+  try { info = await api('/conversations'); } catch (_) { /* hint falls back */ }
+  const free = info ? info.free_replies : 2, cost = info ? info.reply_cost : 3;
+  const box = modal(`<h2 style="margin-top:0">Message ${esc(username)}</h2>
+    <div class="field"><label for="cb">Message</label><textarea id="cb" rows="4" maxlength="1000" placeholder="Say hi…"></textarea>
+      <div class="hint">Your first ${free} ${free === 1 ? 'message' : 'messages'} in each conversation are free, then ${cost} points each. Please don't share phone numbers or links.</div></div>
+    <div id="cerr"></div><div class="row"><button class="btn" id="cs">Send</button><button class="btn alt" id="cc">Cancel</button></div>`);
+  $('#cc', box).onclick = closeModal;
+  $('#cs', box).onclick = async () => {
+    const body = $('#cb', box).value.trim(); if (!body) return;
+    busy($('#cs', box), true, 'Sending…');
+    try {
+      const r = await api('/conversations/start', { method: 'POST', body: { username, body } });
+      if (r.balance != null) { S.me.points_balance = r.balance; renderTopRight(); }
+      closeModal(); toast('Message sent'); go('messages/' + r.conversation_id);
+    } catch (e) {
+      $('#cerr', box).innerHTML = e.status === 402 ? `<div class="notice bad">${esc(e.message)} <a href="#/buy">Buy Points</a></div>` : errBox(e.message);
+      busy($('#cs', box), false);
+    }
+  };
+}
+
 route('messages', ['viewer', 'curator'], async ({ root, args }) => {
   if (args[0]) return thread(root, args[0]);
   const isCur = S.me.account_type === 'curator';
   const d = await api('/conversations');
   root.innerHTML = `<div class="stack"><div class="row between"><h1 style="margin:0">Messages</h1>${isCur ? '<button class="btn sm" id="newmsg">New message</button>' : ''}</div>
     ${isCur ? `<p class="muted small" style="margin:0">You can message any viewer for free. Find a viewer by username, or tap Message on their profile. You also earn $${d.reply_batch_usd} for every ${d.reply_batch_size} paid replies from viewers.</p>`
-      : `<p class="muted small" style="margin:0">Creators can message you for free. Your first ${d.free_replies} ${d.free_replies === 1 ? 'reply' : 'replies'} in each conversation are free, then each reply costs ${d.reply_cost} points.</p>`}
+      : `<p class="muted small" style="margin:0">Message any creator from their profile or the Creators tab. Your first ${d.free_replies} ${d.free_replies === 1 ? 'message' : 'messages'} in each conversation are free, then each costs ${d.reply_cost} points. Creators message you for free.</p>`}
     <div id="inbox">${d.conversations.length ? d.conversations.map(c => `<a class="card msg-row" href="#/messages/${esc(c.id)}">${avatarHtml(c.other.username, c.other.avatar)}
-      <div style="min-width:0;flex:1"><div class="row between" style="flex-wrap:nowrap"><b>${esc(c.other.username)}</b><span class="muted small">${ago(c.last_at)}</span></div>
+      <div style="min-width:0;flex:1"><div class="row between" style="flex-wrap:nowrap"><b>${esc(c.other.username)}${c.other.system ? ' <span class="badge ok">Official</span>' : ''}</b><span class="muted small">${ago(c.last_at)}</span></div>
       <div class="muted small msg-last">${esc(c.last_body || '')}</div></div>${c.unread ? `<b class="dot" style="position:static">${c.unread > 9 ? '9+' : c.unread}</b>` : ''}</a>`).join('')
       : `<div class="empty">No messages yet.${isCur ? '' : ' When a creator writes to you, it will show up here.'}</div>`}</div></div>`;
   const nb = $('#newmsg'); if (nb) nb.onclick = () => composeMessage('');
@@ -371,7 +394,7 @@ async function thread(root, convId) {
   const isViewer = S.me.account_type === 'viewer';
   let meta = first, lastId = 0;
   root.innerHTML = `<div class="stack thread"><div class="row between"><div class="row" style="flex-wrap:nowrap"><a class="btn ghost sm" href="#/messages" style="padding-left:0">←</a>${avatarHtml(meta.other.username, meta.other.avatar)}<a href="#/u/${esc(meta.other.username)}"><b>${esc(meta.other.username)}</b></a></div>
-      ${isViewer ? '<button class="btn alt sm" id="blk"></button>' : ''}</div>
+      ${isViewer && meta.other.system ? '' : '<button class="btn alt sm" id="blk"></button>'}</div>
     <div class="msg-list" id="ml" role="log" aria-live="polite"></div>
     <div id="composer"></div></div>`;
   const ml = $('#ml');
@@ -406,15 +429,21 @@ async function thread(root, convId) {
   };
   const hint = () => {
     if (!isViewer) return '';
+    if (meta.other && meta.other.system) return 'Replies to the VIDXX Team are free. This is an automated account, so replies may not be read.';
     return meta.free_left > 0
       ? `${meta.free_left} free ${meta.free_left === 1 ? 'reply' : 'replies'} left, then ${meta.reply_cost} points each`
       : `Each reply costs ${meta.reply_cost} points · Balance ${num(S.me.points_balance)} pts`;
   };
   const drawComposer = () => {
     const c = $('#composer');
-    const blk = $('#blk'); if (blk) blk.textContent = meta.blocked ? 'Unblock' : 'Block';
+    const mykey = isViewer ? 'blocked' : 'curator_blocked';
+    const blk = $('#blk'); if (blk) blk.textContent = meta[mykey] ? 'Unblock' : 'Block';
     if (meta.blocked) {
       c.innerHTML = isViewer ? '<div class="notice warn">You blocked this creator. Unblock to reply.</div>' : '<div class="notice warn">This viewer has blocked messages from you.</div>';
+      return;
+    }
+    if (meta.curator_blocked) {
+      c.innerHTML = isViewer ? '<div class="notice warn">This creator is not accepting messages from you.</div>' : '<div class="notice warn">You blocked this viewer. Unblock to message them.</div>';
       return;
     }
     c.innerHTML = `<form class="cm-form" id="mf" novalidate>${isViewer ? '' : '<label class="btn alt sm" style="cursor:pointer" title="Send a picture or video" aria-label="Attach picture or video">📎<input type="file" id="mfile" accept="image/jpeg,image/png,image/webp,video/mp4" hidden></label>'}<input type="text" id="mi" maxlength="1000" placeholder="Write a message…" aria-label="Message" autocomplete="off"><button class="btn sm" id="msend">Send</button></form>
@@ -459,7 +488,7 @@ async function thread(root, convId) {
   };
   const poll = async () => {
     const d = await api('/conversations/' + encodeURIComponent(convId) + '/messages?after=' + lastId);
-    const changed = d.blocked !== meta.blocked;
+    const changed = d.blocked !== meta.blocked || d.curator_blocked !== meta.curator_blocked;
     meta = d;
     addMsgs(d.messages);
     if (changed) drawComposer();
@@ -467,7 +496,8 @@ async function thread(root, convId) {
   addMsgs(first.messages); drawComposer();
   const blk = $('#blk');
   if (blk) blk.onclick = async () => {
-    try { await api('/conversations/' + encodeURIComponent(convId) + '/block', { method: 'POST', body: { blocked: !meta.blocked } }); meta.blocked = !meta.blocked; drawComposer(); }
+    const key = isViewer ? 'blocked' : 'curator_blocked';
+    try { await api('/conversations/' + encodeURIComponent(convId) + (isViewer ? '/block' : '/curator-block'), { method: 'POST', body: { blocked: !meta[key] } }); meta[key] = !meta[key]; drawComposer(); }
     catch (e) { toast(e.message, true); }
   };
   refreshUnread(true);
@@ -490,5 +520,5 @@ window.addEventListener('hashchange', () => refreshUnread(false));
 setInterval(() => refreshUnread(true), 30000);
 window.addEventListener('DOMContentLoaded', () => setTimeout(() => refreshUnread(true), 1500));
 
-Object.assign(window.CV, { comments, liveList, composeMessage });
+Object.assign(window.CV, { comments, liveList, composeMessage, composeToCreator });
 })();

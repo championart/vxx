@@ -461,11 +461,12 @@ route('creators', ['viewer', 'admin'], async ({ root }) => {
       const d = await api('/creators' + (all ? '?all=1' : ''));
       if (!$('#cr-list')) return;
       $('#cr-list').innerHTML = d.creators.length ? `<div class="stack">${d.creators.map((c, i) => `<div class="card row between" style="flex-wrap:nowrap;gap:12px">
-        <a class="row" href="#/u/${esc(c.username)}" style="flex-wrap:nowrap;gap:12px;min-width:0">${avatarHtml(c.username, c.avatar)}<div style="min-width:0"><b style="color:var(--ink)">${esc(c.username)}</b> ${c.live ? '<span class="tag live" style="position:static">● LIVE</span>' : ''}
-        <div class="small muted">${num(c.followers)} follower${c.followers === 1 ? '' : 's'} · ${num(c.videos)} video${c.videos === 1 ? '' : 's'}</div></div></a>
-        ${S.me.account_type === 'viewer' ? `<button class="btn sm crf" data-u="${esc(c.username)}" data-f="${c.following ? 1 : 0}"></button>` : ''}</div>`).join('')}</div>`
+        <a class="row" href="#/u/${esc(c.username)}" style="flex-wrap:nowrap;gap:12px;min-width:0">${avatarHtml(c.username, c.avatar)}<div style="min-width:0"><b style="color:var(--ink)">${esc(c.username)}</b> ${c.live ? '<span class="tag live" style="position:static">● LIVE</span>' : ''}${c.demo ? ' <span class="badge">Demo account</span>' : ''}
+        <div class="small muted">${c.demo ? 'Sample profile. Not a real creator.' : `${num(c.followers)} follower${c.followers === 1 ? '' : 's'} · ${num(c.videos)} video${c.videos === 1 ? '' : 's'}`}</div></div></a>
+        ${S.me.account_type === 'viewer' && !c.demo ? `<div class="row" style="flex-wrap:nowrap;gap:6px"><button class="btn alt sm crm" data-u="${esc(c.username)}">Message</button><button class="btn sm crf" data-u="${esc(c.username)}" data-f="${c.following ? 1 : 0}"></button></div>` : ''}</div>`).join('')}</div>`
         : '<div class="empty">No active creators right now. Try "All creators".</div>';
       $$('.crf', $('#cr-list')).forEach(b => followBtn(b, b.dataset.u, b.dataset.f === '1'));
+      $$('.crm', $('#cr-list')).forEach(b => b.onclick = () => window.CV.composeToCreator(b.dataset.u));
     } catch (e) { $('#cr-list').innerHTML = errBox(e.message); }
   };
   $('#cr-act').onclick = () => { if (all) { all = false; draw(); } };
@@ -645,12 +646,17 @@ route('u', null, async ({ root, args }) => {
   const d = await api('/users/' + encodeURIComponent(args[0] || ''));
   root.innerHTML = `<div class="stack"><div class="card row" style="flex-wrap:nowrap;gap:16px">${avatarHtml(d.username, d.avatar, 'lg')}
     <div><h1 style="margin:0">${esc(d.username)}</h1>
-    <div class="row" style="gap:6px;margin:6px 0"><span class="badge" style="text-transform:capitalize">${esc(d.account_type)}</span><span class="badge" style="text-transform:capitalize">${esc(d.gender)}</span></div>
-    <div class="small muted">Joined ${date(d.created_at)}${d.account_type === 'curator' ? ` · <span id="fcnt">${num(d.followers)} follower${d.followers === 1 ? '' : 's'}</span>` : ''}</div>${S.me && S.me.account_type === 'viewer' && d.account_type === 'curator' ? '<button class="btn sm" id="fol" style="margin-top:8px"></button> ' : ''}<button class="btn alt sm" id="sharepub" style="margin-top:8px">Share profile</button></div></div>
-    ${d.account_type === 'curator' ? `<div class="stats"><div class="stat"><span>Followers</span><b>${num(d.followers)}</b></div><div class="stat"><span>Published videos</span><b>${num((d.videos || []).length)}</b></div><div class="stat"><span>Total views</span><b>${num(d.total_views)}</b></div></div>
+    <div class="row" style="gap:6px;margin:6px 0">${d.is_system ? '<span class="badge ok">Official · VIDXX Team</span>' : d.is_demo ? '<span class="badge">Demo account</span>' : `<span class="badge" style="text-transform:capitalize">${esc(d.account_type)}</span><span class="badge" style="text-transform:capitalize">${esc(d.gender)}</span>`}</div>
+    ${d.is_demo ? '<p class="small muted" style="margin:0 0 6px">This is a sample profile so the app is not empty. It is not a real person and cannot be followed or messaged.</p>' : ''}${d.is_system ? '<p class="small muted" style="margin:0 0 6px">Automated account run by VIDXX. It sends welcome and help messages.</p>' : ''}
+    <div class="small muted">Joined ${date(d.created_at)}${d.account_type === 'curator' && !d.is_demo && !d.is_system ? ` · <span id="fcnt">${num(d.followers)} follower${d.followers === 1 ? '' : 's'}</span>` : ''}</div>${S.me && S.me.account_type === 'viewer' && d.account_type === 'curator' && !d.is_demo && !d.is_system ? '<button class="btn sm" id="fol" style="margin-top:8px"></button> ' : ''}<button class="btn alt sm" id="sharepub" style="margin-top:8px">Share profile</button></div></div>
+    ${d.account_type === 'curator' && !d.is_demo && !d.is_system ? `<div class="stats"><div class="stat"><span>Followers</span><b>${num(d.followers)}</b></div><div class="stat"><span>Published videos</span><b>${num((d.videos || []).length)}</b></div><div class="stat"><span>Total views</span><b>${num(d.total_views)}</b></div></div>
     <h2>Videos</h2>${(d.videos || []).length ? `<div class="grid">${d.videos.map(x => `<a class="vcard" href="#/video/${esc(x.id)}"><div class="th">${x.thumb ? `<img src="${esc(x.thumb)}" alt="" loading="lazy">` : ''}</div><div class="bd"><div class="t">${esc(x.title)}</div></div></a>`).join('')}</div>` : '<div class="empty">No videos yet.</div>'}` : ''}</div>`;
   $('#sharepub').onclick = () => shareProfile(d.username);
   if ($('#fol')) followBtn($('#fol'), d.username, !!d.following, r => { $('#fcnt').textContent = num(r.followers) + ' follower' + (r.followers === 1 ? '' : 's'); });
+  if (S.me && S.me.account_type === 'viewer' && d.account_type === 'curator' && !d.is_demo && !d.is_system) {
+    $('#sharepub').insertAdjacentHTML('afterend', ' <button class="btn alt sm" id="msg-c" style="margin-top:8px">Message</button>');
+    $('#msg-c').onclick = () => window.CV.composeToCreator(d.username);
+  }
   if (S.me && S.me.account_type === 'curator' && d.account_type === 'viewer') {
     $('#sharepub').insertAdjacentHTML('afterend', ' <button class="btn sm" id="msg-u" style="margin-top:8px">Message</button>');
     $('#msg-u').onclick = () => window.CV.composeMessage(d.username);

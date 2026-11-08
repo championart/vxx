@@ -85,3 +85,11 @@ Viewers can follow curators (button on profiles and video pages). Curators see t
 
 ## Creators directory
 Viewers have a "Creators" tab (between Explore and Buy Points). It lists active creators (they have a live video or are streaming) from most to least followers, with a LIVE tag and a Follow button; "All creators" also includes inactive ones. Run `supabase/migration_creators.sql` once (also in `schema.sql`).
+
+## VIDXX Team welcome messages and demo accounts (Admin -> Team & demo)
+- Create the official **VIDXX_Team** account in one click. New viewers get its welcome messages automatically (first after 3 s, then every 10 s by default; edit the text and timing in admin, separate messages with a `---` line). Replying to it is always free. Existing viewers are not welcomed retroactively.
+- **Demo accounts** are clearly labelled sample profiles ("Demo account" badge, "not a real creator") that show at the end of the Creators list while the switch is on. They can't be followed or messaged, never earn, and are excluded from rankings. Switch them off or delete them when real creators join.
+- Run `supabase/migration_team.sql` once (also in `schema.sql`).
+
+## Viewers can start conversations
+A viewer can tap **Message** on a creator's profile (or the Creators tab). Same payment rule as replies: the first `message_free_replies` messages in a conversation are free, then `message_reply_points` each; creators earn the reply reward on paid ones. Creators can **Block** a viewer inside the conversation (viewer can't message them until unblocked). Limits: 10 new messages/minute, 20 new conversations per viewer per day; demo and team accounts can't be messaged; the contact-detail filter applies. Run `supabase/migration_viewer_start.sql` once (also in `schema.sql`).
