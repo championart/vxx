@@ -381,11 +381,11 @@ on conflict (key) do nothing;
 -- allow the new ledger reasons (works on a fresh or an existing database)
 alter table points_ledger drop constraint if exists points_ledger_reason_check;
 alter table points_ledger add constraint points_ledger_reason_check
-  check (reason in ('purchase','unlock','admin_adjust','live','message'));
+  check (reason in ('purchase','unlock','admin_adjust','live','message','media'));
 alter table points_ledger add column if not exists ref_stream uuid;
 alter table earnings_ledger drop constraint if exists earnings_ledger_reason_check;
 alter table earnings_ledger add constraint earnings_ledger_reason_check
-  check (reason in ('unlock','live','reply','withdrawal_hold','withdrawal_release','admin_adjust'));
+  check (reason in ('unlock','live','reply','media','withdrawal_hold','withdrawal_release','admin_adjust'));
 alter table earnings_ledger add column if not exists ref_stream uuid;
 alter table earnings_ledger add column if not exists ref_conversation uuid;
 alter table profiles add column if not exists reply_progress int not null default 0;
@@ -685,3 +685,18 @@ language sql stable as $$
   order by c.last_message_at desc limit 100
 $$;
 revoke execute on function inbox(uuid) from public, anon, authenticated;
+
+-- ---------- creator directory ----------
+create or replace function creator_directory()
+returns table(id uuid, username text, avatar_url text, followers bigint, videos bigint, live boolean, last_active timestamptz)
+language sql stable as $$
+  select p.id, p.username, p.avatar_url,
+    (select count(*) from follows f where f.creator_id = p.id),
+    (select count(*) from videos v where v.owner_id = p.id and v.status = 'approved'),
+    exists (select 1 from streams s where s.host_id = p.id and s.status = 'live' and s.last_ping > now() - interval '120 seconds'),
+    greatest((select max(v.approved_at) from videos v where v.owner_id = p.id and v.status = 'approved'),
+             (select max(s.started_at) from streams s where s.host_id = p.id))
+  from profiles p
+  where p.account_type = 'curator' and p.status = 'active'
+$$;
+revoke execute on function creator_directory() from public, anon, authenticated;

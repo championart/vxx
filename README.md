@@ -82,3 +82,6 @@ Viewers can follow curators (button on profiles and video pages). Curators see t
 - Curators can attach a picture (resized to 1280px) or MP4 video (max 50 MB) in a conversation. The viewer sees a locked card and pays coins to open it (admin settings: picture 100, video 100). The creator earns an admin-set USD amount per opened item (default $0.002). Files live in a private `dm` storage bucket, are shown via short-lived signed links only after paying, and are auto-deleted after `media_lifetime_hours` (default 24).
 - Run `supabase/migration_media.sql` once (also in `schema.sql`).
 - When a creator a viewer follows goes live, a dot appears on the Explore tab in the bottom nav (checked about every 30 s).
+
+## Creators directory
+Viewers have a "Creators" tab (between Explore and Buy Points). It lists active creators (they have a live video or are streaming) from most to least followers, with a LIVE tag and a Follow button; "All creators" also includes inactive ones. Run `supabase/migration_creators.sql` once (also in `schema.sql`).

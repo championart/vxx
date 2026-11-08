@@ -28,6 +28,7 @@ const ICONS = {
   shield: '<path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/>',
   lock: '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/>',
   live: '<rect x="3" y="6" width="13" height="12" rx="2"/><path d="M16 10l5-3v10l-5-3z"/>',
+  users: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.6 3.3-5.5 6.5-5.5s5.7 1.9 6.5 5.5"/><path d="M16 4.8a3.5 3.5 0 010 6.4M18 14.8c2 .7 3.2 2.4 3.5 5.2"/>',
   chat: '<path d="M4 5h16v11H9l-5 4z"/>'
 };
 const icon = (n, cls = '') => `<svg class="i ${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[n] || ''}</svg>`;
@@ -169,7 +170,7 @@ async function render() {
 function navItems() {
   const t = S.me && S.me.account_type;
   if (!S.me) return [['', 'Home', 'home'], ['explore', 'Explore', 'compass'], ['login', 'Log in', 'user'], ['register', 'Join', 'plus']];
-  if (t === 'viewer') return [['explore', 'Explore', 'compass'], ['buy', 'Buy Points', 'coin'], ['messages', 'Messages', 'chat'], ['profile', 'Profile', 'user']];
+  if (t === 'viewer') return [['explore', 'Explore', 'compass'], ['creators', 'Creators', 'users'], ['buy', 'Buy Points', 'coin'], ['messages', 'Messages', 'chat'], ['profile', 'Profile', 'user']];
   if (t === 'curator') return [['dashboard', 'Dashboard', 'chart'], ['golive', 'Go Live', 'live'], ['upload', 'Upload', 'upload'], ['messages', 'Messages', 'chat'], ['profile', 'Profile', 'user']];
   return [['admin', 'Admin', 'shield'], ['explore', 'Videos', 'compass'], ['profile', 'Profile', 'user']];
 }
@@ -448,6 +449,30 @@ route('explore', null, async ({ root, query }) => {
   await show(tab);
 });
 
+// --- creators directory ---
+route('creators', ['viewer', 'admin'], async ({ root }) => {
+  let all = false;
+  root.innerHTML = `<h1>Creators</h1><p class="muted" style="margin-top:0">Most popular first. Follow creators to see their videos and get a dot when they go live.</p>
+    <div class="row" style="margin-bottom:12px"><button class="btn sm" id="cr-act">Active</button><button class="btn sm alt" id="cr-all">All creators</button></div><div id="cr-list">${loading}</div>`;
+  const draw = async () => {
+    $('#cr-act').classList.toggle('alt', all); $('#cr-all').classList.toggle('alt', !all);
+    $('#cr-list').innerHTML = loading;
+    try {
+      const d = await api('/creators' + (all ? '?all=1' : ''));
+      if (!$('#cr-list')) return;
+      $('#cr-list').innerHTML = d.creators.length ? `<div class="stack">${d.creators.map((c, i) => `<div class="card row between" style="flex-wrap:nowrap;gap:12px">
+        <a class="row" href="#/u/${esc(c.username)}" style="flex-wrap:nowrap;gap:12px;min-width:0">${avatarHtml(c.username, c.avatar)}<div style="min-width:0"><b style="color:var(--ink)">${esc(c.username)}</b> ${c.live ? '<span class="tag live" style="position:static">● LIVE</span>' : ''}
+        <div class="small muted">${num(c.followers)} follower${c.followers === 1 ? '' : 's'} · ${num(c.videos)} video${c.videos === 1 ? '' : 's'}</div></div></a>
+        ${S.me.account_type === 'viewer' ? `<button class="btn sm crf" data-u="${esc(c.username)}" data-f="${c.following ? 1 : 0}"></button>` : ''}</div>`).join('')}</div>`
+        : '<div class="empty">No active creators right now. Try "All creators".</div>';
+      $$('.crf', $('#cr-list')).forEach(b => followBtn(b, b.dataset.u, b.dataset.f === '1'));
+    } catch (e) { $('#cr-list').innerHTML = errBox(e.message); }
+  };
+  $('#cr-act').onclick = () => { if (all) { all = false; draw(); } };
+  $('#cr-all').onclick = () => { if (!all) { all = true; draw(); } };
+  await draw();
+});
+
 // --- video player ---
 route('video', null, async ({ root, args }) => {
   const id = args[0];
@@ -586,7 +611,7 @@ route('profile', 'auth', async ({ root }) => {
   const rs = $('#role-sections');
   if (me.account_type === 'viewer') {
     rs.innerHTML = `<div class="card"><span class="muted small">Points balance</span><div style="font-size:2rem;font-weight:800">${num(me.points_balance)} pts</div></div>
-      <h2>Following</h2><div id="fl">${loading}</div>
+      <div class="row between"><h2>Following</h2><a class="btn sm" href="#/creators">Find creators</a></div><div id="fl">${loading}</div>
       <h2>Buy Points</h2><div id="pk"></div>
       <h2>Unlocked videos &amp; viewing history</h2><div id="hist">${loading}</div>
       <h2>Payment history</h2><div id="ph">${loading}</div>`;

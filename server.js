@@ -332,6 +332,19 @@ app.get('/api/following', auth, role('viewer'), wrap(async (req, res) => {
   res.json({ creators: (data || []).map(p => ({ username: p.username, avatar: avatarOf(p) })) });
 }));
 
+app.get('/api/creators', auth, role('viewer', 'admin'), wrap(async (req, res) => {
+  const { data, error } = await db.rpc('creator_directory');
+  if (error) throw new Error(error.message);
+  const mine = req.profile.account_type === 'viewer' ? new Set(await followedIds(req.profile.id)) : new Set();
+  const all = req.query.all === '1';
+  const list = (data || [])
+    .filter(c => all || c.live || Number(c.videos) > 0)
+    .sort((a, b) => Number(b.followers) - Number(a.followers) || Number(b.videos) - Number(a.videos) || String(a.username).localeCompare(b.username))
+    .slice(0, 200)
+    .map(c => ({ username: c.username, avatar: avatarOf(c), followers: Number(c.followers), videos: Number(c.videos), live: !!c.live, following: mine.has(c.id) }));
+  res.json({ creators: list });
+}));
+
 // ---------- videos: browse ----------
 const videoCard = (v, unlocked, defaultPrice) => ({
   id: v.id, title: v.title, category: v.category, created_at: v.created_at,
