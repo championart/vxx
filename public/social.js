@@ -85,7 +85,7 @@ function comments(el, target) {
 // ---------------------------------------------------------------- live: list
 function liveCard(s) {
   return `<a class="vcard" href="#/live/${esc(s.id)}">
-    <div class="th live-th">${avatarHtml(s.host && s.host.username, s.host && s.host.avatar, 'lg')}<span class="tag live">● LIVE</span><span class="tag right">${num(s.viewers)} watching</span></div>
+    <div class="th live-th">${avatarHtml(s.host && s.host.username, s.host && s.host.avatar, 'lg')}<span class="tag live">● LIVE</span>${s.following ? '<span class="tag ok" style="top:auto;bottom:8px">Following</span>' : ''}<span class="tag right">${num(s.viewers)} watching</span></div>
     <div class="bd"><div class="t">${esc(s.title)}</div><div class="owner">${avatarHtml(s.host && s.host.username, s.host && s.host.avatar)}<span>${esc(s.host && s.host.username)}</span></div></div></a>`;
 }
 function liveList(el) {
@@ -97,7 +97,7 @@ function liveList(el) {
       const d = await api('/live');
       if (el.dataset.live !== token || !attached(el)) return;
       el.innerHTML = d.streams.length
-        ? `<p class="muted small" style="margin-top:0">Watching live costs ${num(d.price)} points per minute.</p><div class="grid">${d.streams.map(liveCard).join('')}</div>`
+        ? `<p class="muted small" style="margin-top:0">Watching live costs ${num(d.price)} points per minute.${d.streams.some(x => x.following) ? ' Creators you follow are shown first.' : ''}</p><div class="grid">${d.streams.map(liveCard).join('')}</div>`
         : '<div class="empty">No one is live right now. Check back soon.</div>';
     } catch (e) { if (first) el.innerHTML = errBox(e.message); }
   };
@@ -340,6 +340,32 @@ route('messages', ['viewer', 'curator'], async ({ root, args }) => {
   const nb = $('#newmsg'); if (nb) nb.onclick = () => composeMessage('');
 });
 
+let sbLoad = null;
+function loadSb() {
+  if (window.supabase) return Promise.resolve();
+  if (sbLoad) return sbLoad;
+  sbLoad = new Promise((res, rej) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js';
+    s.onload = res; s.onerror = () => { sbLoad = null; rej(new Error('Could not load the upload library. Check your connection.')); };
+    document.head.appendChild(s);
+  });
+  return sbLoad;
+}
+function shrinkImage(file, max) {
+  return new Promise((resolve, reject) => {
+    const img = new Image(), url = URL.createObjectURL(file);
+    img.onload = () => {
+      const k = Math.min(1, max / Math.max(img.width, img.height));
+      const c = document.createElement('canvas'); c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      URL.revokeObjectURL(url);
+      c.toBlob(b => b ? resolve(b) : reject(new Error('Image failed')), 'image/jpeg', 0.85);
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('That image could not be read')); };
+    img.src = url;
+  });
+}
 async function thread(root, convId) {
   const first = await api('/conversations/' + encodeURIComponent(convId) + '/messages');
   const isViewer = S.me.account_type === 'viewer';
@@ -349,7 +375,29 @@ async function thread(root, convId) {
     <div class="msg-list" id="ml" role="log" aria-live="polite"></div>
     <div id="composer"></div></div>`;
   const ml = $('#ml');
-  const bubble = m => `<div class="bubble ${m.mine ? 'mine' : ''}" data-id="${m.id}"><div>${esc(m.body)}</div><div class="bmeta">${ago(m.created_at)}${m.mine && m.cost ? ` · −${m.cost} pts` : ''}</div></div>`;
+  const mediaHtml = m => {
+    const md = m.media; if (!md) return '';
+    const label = md.type === 'video' ? 'Video' : 'Picture';
+    if (md.expired) return `<div class="mmedia locked"><span class="muted small">${label} expired</span></div>`;
+    if (md.unlocked && md.url) return md.type === 'video'
+      ? `<video class="mmedia" src="${esc(md.url)}" controls playsinline controlsList="nodownload noplaybackrate" disablePictureInPicture preload="metadata" oncontextmenu="return false"></video>`
+      : `<img class="mmedia" src="${esc(md.url)}" alt="Picture" loading="lazy" draggable="false" oncontextmenu="return false">`;
+    return `<div class="mmedia locked"><div style="font-size:1.6rem" aria-hidden="true">🔒</div><b>${label}</b><button class="btn sm unl" data-id="${m.id}">Unlock for ${num(md.price)} coins</button></div>`;
+  };
+  const bubble = m => `<div class="bubble ${m.mine ? 'mine' : ''}" data-id="${m.id}">${m.body ? `<div>${esc(m.body)}</div>` : ''}${mediaHtml(m)}<div class="bmeta">${ago(m.created_at)}${m.mine && m.cost ? ` · −${m.cost} pts` : ''}${m.mine && m.media ? ` · ${m.media.type === 'video' ? 'video' : 'picture'} · ${num(m.media.price)} coins to open` : ''}</div></div>`;
+  ml.onclick = async e => {
+    const b = e.target.closest('.unl'); if (!b) return;
+    busy(b, true, 'Unlocking…');
+    try {
+      const r = await api('/messages/' + encodeURIComponent(b.dataset.id) + '/unlock', { method: 'POST' });
+      S.me.points_balance = r.balance; renderTopRight();
+      const el = ml.querySelector(`.bubble[data-id="${r.message.id}"]`);
+      if (el) el.outerHTML = bubble(r.message);
+    } catch (er) {
+      busy(b, false);
+      toast(er.status === 402 ? er.message + ' Buy Points first.' : er.message, true);
+    }
+  };
   const addMsgs = list => {
     if (!list.length) return;
     const stick = ml.scrollHeight - ml.scrollTop - ml.clientHeight < 80 || !lastId;
@@ -369,8 +417,31 @@ async function thread(root, convId) {
       c.innerHTML = isViewer ? '<div class="notice warn">You blocked this creator. Unblock to reply.</div>' : '<div class="notice warn">This viewer has blocked messages from you.</div>';
       return;
     }
-    c.innerHTML = `<form class="cm-form" id="mf" novalidate><input type="text" id="mi" maxlength="1000" placeholder="Write a message…" aria-label="Message" autocomplete="off"><button class="btn sm" id="msend">Send</button></form>
+    c.innerHTML = `<form class="cm-form" id="mf" novalidate>${isViewer ? '' : '<label class="btn alt sm" style="cursor:pointer" title="Send a picture or video" aria-label="Attach picture or video">📎<input type="file" id="mfile" accept="image/jpeg,image/png,image/webp,video/mp4" hidden></label>'}<input type="text" id="mi" maxlength="1000" placeholder="Write a message…" aria-label="Message" autocomplete="off"><button class="btn sm" id="msend">Send</button></form>
       <div class="hint" id="mh">${esc(hint())}</div><div id="merr2"></div>`;
+    const mf = $('#mfile');
+    if (mf) mf.onchange = async e => {
+      const f = e.target.files[0]; e.target.value = ''; if (!f) return;
+      const isVid = f.type === 'video/mp4';
+      if (!isVid && !/^image\//.test(f.type)) return $('#merr2').innerHTML = errBox('Choose a picture (JPG, PNG, WebP) or an MP4 video');
+      if (isVid && f.size > 50 * 1024 * 1024) return $('#merr2').innerHTML = errBox('Video is larger than 50 MB');
+      const price = isVid ? meta.video_points : meta.image_points;
+      if (!confirm(`Send this ${isVid ? 'video' : 'picture'}? The viewer pays ${price} coins to open it.`)) return;
+      $('#msend').disabled = true; $('#merr2').innerHTML = '<div class="notice">Uploading… keep this page open.</div>';
+      try {
+        const blob = isVid ? f : await shrinkImage(f, 1280);
+        const u = await api('/messages/media-upload', { method: 'POST', body: { type: isVid ? 'video' : 'image' } });
+        await loadSb();
+        const cfg = await api('/config');
+        const sb = window.supabase.createClient(cfg.supabaseUrl, cfg.anonKey, { auth: { persistSession: false } });
+        const up = await sb.storage.from('dm').uploadToSignedUrl(u.path, u.token, blob, { contentType: isVid ? 'video/mp4' : 'image/jpeg' });
+        if (up.error) throw new Error('Upload failed: ' + up.error.message);
+        await api('/conversations/' + encodeURIComponent(convId) + '/messages', { method: 'POST', body: { body: $('#mi').value.trim(), media: { path: u.path, type: u.type } } });
+        $('#mi').value = ''; $('#merr2').innerHTML = '';
+        await poll();
+      } catch (er) { $('#merr2').innerHTML = errBox(er.message); }
+      const sb2 = $('#msend'); if (sb2) sb2.disabled = false;
+    };
     $('#mf').onsubmit = async e => {
       e.preventDefault();
       const body = $('#mi').value.trim(); if (!body) return;
@@ -409,7 +480,11 @@ async function refreshUnread(force) {
   if (!S.me || !['viewer', 'curator'].includes(S.me.account_type)) { if (S.unread) { S.unread = 0; updateNav(); } return; }
   if (!force && Date.now() - lastUnreadCheck < 8000) return;
   lastUnreadCheck = Date.now();
-  try { const d = await api('/messages/unread'); if (d.unread !== S.unread) { S.unread = d.unread; updateNav(); } } catch (_) { /* ignore */ }
+  try {
+    const d = await api('/messages/unread');
+    const lf = d.live_following || 0;
+    if (d.unread !== S.unread || lf !== (S.liveFollowing || 0)) { S.unread = d.unread; S.liveFollowing = lf; updateNav(); }
+  } catch (_) { /* ignore */ }
 }
 window.addEventListener('hashchange', () => refreshUnread(false));
 setInterval(() => refreshUnread(true), 30000);

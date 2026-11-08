@@ -74,3 +74,11 @@ Visitors outside Kenya are auto-detected (Cloudflare country header, with an IP 
 
 ## Contact-detail filter
 Messages, comments and live chat are checked on the server. Phone numbers (digits, spaced, spelled out in English/Swahili), emails, links, other apps (WhatsApp, Telegram, etc.) and @handles are rejected with a clear message, and each blocked attempt is recorded in Admin -> Audit as `contact_blocked`. No filter is perfect; determined users can still disguise numbers, so watch the audit log and suspend repeat offenders.
+
+## Following
+Viewers can follow curators (button on profiles and video pages). Curators see their follower count on the dashboard and profile. In Explore, "Following" filters videos to followed creators, and followed creators' live streams are listed first. Run `supabase/migration_follow.sql` once (also included in `schema.sql`).
+
+## Paid pictures/videos in messages, and live alerts
+- Curators can attach a picture (resized to 1280px) or MP4 video (max 50 MB) in a conversation. The viewer sees a locked card and pays coins to open it (admin settings: picture 100, video 100). The creator earns an admin-set USD amount per opened item (default $0.002). Files live in a private `dm` storage bucket, are shown via short-lived signed links only after paying, and are auto-deleted after `media_lifetime_hours` (default 24).
+- Run `supabase/migration_media.sql` once (also in `schema.sql`).
+- When a creator a viewer follows goes live, a dot appears on the Explore tab in the bottom nav (checked about every 30 s).

@@ -176,7 +176,7 @@ function navItems() {
 function updateNav() {
   const cur = parseHash().name;
   const items = navItems();
-  const link = ([h, label, ic]) => `<a href="#/${h}" class="${cur === h ? 'on' : ''}" ${cur === h ? 'aria-current="page"' : ''}>${icon(ic)}<span>${label}</span>${h === 'messages' && S.unread ? `<b class="dot">${S.unread > 9 ? '9+' : S.unread}</b>` : ''}</a>`;
+  const link = ([h, label, ic]) => `<a href="#/${h}" class="${cur === h ? 'on' : ''}" ${cur === h ? 'aria-current="page"' : ''}>${icon(ic)}<span>${label}</span>${h === 'messages' && S.unread ? `<b class="dot">${S.unread > 9 ? '9+' : S.unread}</b>` : ''}${h === 'explore' && S.liveFollowing ? '<b class="dot" title="A creator you follow is live" aria-label="A creator you follow is live">●</b>' : ''}</a>`;
   $('#side-nav').innerHTML = items.map(link).join('');
   $('#bottom-nav').innerHTML = items.map(link).join('');
   $('#side-foot').innerHTML = S.me ? `<div class="row" style="flex-wrap:nowrap">${avatarHtml(S.me.username, S.me.avatar)}<div><b>${esc(S.me.username)}</b><div class="small muted" style="text-transform:capitalize">${esc(S.me.account_type)}</div></div></div><button class="btn alt sm block" id="logout-side" style="margin-top:10px">Log out</button>` : '';
@@ -207,6 +207,20 @@ function videoCard(v) {
     <div class="th">${v.thumb ? `<img src="${esc(v.thumb)}" alt="" loading="lazy" decoding="async">` : ''}<span class="tag ${v.unlocked ? 'ok' : ''}">${v.unlocked ? 'Unlocked' : num(v.price) + ' pts'}</span></div>
     <div class="bd"><div class="t">${esc(v.title)}</div>
     ${v.owner ? `<div class="owner">${avatarHtml(v.owner.username, v.owner.avatar)}<span>${esc(v.owner.username)}</span></div>` : ''}</div></a>`;
+}
+
+// follow / unfollow button (viewers only)
+function followBtn(btn, username, following, onChange) {
+  const paint = () => { btn.textContent = following ? 'Following' : 'Follow'; btn.classList.toggle('alt', following); btn.setAttribute('aria-pressed', following ? 'true' : 'false'); };
+  paint();
+  btn.onclick = async () => {
+    btn.disabled = true;
+    try {
+      const r = await api('/follow/' + encodeURIComponent(username), { method: 'POST', body: { follow: !following } });
+      following = r.following; paint(); if (onChange) onChange(r);
+    } catch (e) { toast(e.message, true); }
+    btn.disabled = false;
+  };
 }
 
 async function packagesSection(root) {
@@ -394,18 +408,20 @@ route('explore', null, async ({ root, query }) => {
     <div id="xbody"></div>`;
   const body = $('#xbody');
   const showVideos = async () => {
-    const st = { q: '', page: 1 };
+    const st = { q: '', page: 1, following: false };
     body.innerHTML = `<input type="search" id="q" placeholder="Search videos" aria-label="Search videos" style="margin-bottom:12px">
+      <div class="row" style="margin-bottom:12px"><button class="btn sm" id="ff-all">All</button><button class="btn sm alt" id="ff-fol">Following</button></div>
       <div id="vlist">${loading}</div><div class="center" style="margin-top:16px"><button class="btn alt" id="more" hidden>Load more</button></div>`;
     let shown = 0;
     const load = async (reset) => {
       if (reset) { st.page = 1; shown = 0; $('#vlist').innerHTML = loading; }
       const p = new URLSearchParams({ page: st.page });
       if (st.q) p.set('q', st.q);
+      if (st.following) p.set('following', '1');
       const d = await api('/videos?' + p);
       if (!$('#vlist')) return;
       if (reset) $('#vlist').innerHTML = '<div class="grid" id="g"></div>';
-      if (!d.videos.length && reset) $('#vlist').innerHTML = '<div class="empty">No videos found.</div>';
+      if (!d.videos.length && reset) $('#vlist').innerHTML = `<div class="empty">${st.following ? 'No videos from creators you follow yet. Follow creators from their profile or video page.' : 'No videos found.'}</div>`;
       $('#g') && $('#g').insertAdjacentHTML('beforeend', d.videos.map(videoCard).join(''));
       shown += d.videos.length;
       $('#more').hidden = shown >= d.total;
@@ -413,6 +429,9 @@ route('explore', null, async ({ root, query }) => {
     let timer;
     $('#q').oninput = e => { clearTimeout(timer); timer = setTimeout(() => { st.q = e.target.value.trim(); load(true).catch(x => toast(x.message, true)); }, 350); };
     $('#more').onclick = () => { st.page++; load(false).catch(x => toast(x.message, true)); };
+    const setF = f => { st.following = f; $('#ff-all').classList.toggle('alt', f); $('#ff-fol').classList.toggle('alt', !f); load(true).catch(x => toast(x.message, true)); };
+    $('#ff-all').onclick = () => { if (st.following) setF(false); };
+    $('#ff-fol').onclick = () => { if (!st.following) setF(true); };
     await load(true);
   };
   const show = async t => {
@@ -440,12 +459,14 @@ route('video', null, async ({ root, args }) => {
       <div class="overlay" id="ov" hidden></div></div>
     <div><h1>${esc(v.title)}</h1>
       <div class="row between"><a class="owner" href="#/u/${esc(v.owner && v.owner.username)}" style="margin:0">${avatarHtml(v.owner && v.owner.username, v.owner && v.owner.avatar)}<b style="color:var(--ink);font-size:.95rem">${esc(v.owner && v.owner.username)}</b></a>
-      <button class="btn alt sm" id="share">Share</button></div>
+      <div class="row" style="gap:8px">${me && me.account_type === 'viewer' && v.owner ? '<button class="btn sm" id="fol"></button>' : ''}<button class="btn alt sm" id="share">Share</button></div></div>
+      ${v.followers != null ? `<div class="small muted" style="margin-top:6px" id="fcnt">${num(v.followers)} follower${v.followers === 1 ? '' : 's'}</div>` : ''}
       ${v.expires_at ? `<p class="small muted" style="margin:10px 0 0">Available until ${esc(dtime(v.expires_at))}</p>` : ''}
       ${v.description ? `<p style="margin-top:12px;white-space:pre-wrap">${esc(v.description)}</p>` : ''}
       ${me && me.account_type === 'viewer' ? '<button class="btn ghost sm" id="rep" style="padding-left:0">Report this video</button>' : ''}</div>
     <div id="cm"></div></div>`;
   $('#share').onclick = () => shareVideo(v);
+  if ($('#fol')) followBtn($('#fol'), v.owner.username, !!v.following, r => { $('#fcnt').textContent = num(r.followers) + ' follower' + (r.followers === 1 ? '' : 's'); });
   if (me) window.CV.comments($('#cm'), { video: v.id });
   const vid = $('#vid'), ov = $('#ov');
   vid.oncontextmenu = e => e.preventDefault();
@@ -565,10 +586,14 @@ route('profile', 'auth', async ({ root }) => {
   const rs = $('#role-sections');
   if (me.account_type === 'viewer') {
     rs.innerHTML = `<div class="card"><span class="muted small">Points balance</span><div style="font-size:2rem;font-weight:800">${num(me.points_balance)} pts</div></div>
+      <h2>Following</h2><div id="fl">${loading}</div>
       <h2>Buy Points</h2><div id="pk"></div>
       <h2>Unlocked videos &amp; viewing history</h2><div id="hist">${loading}</div>
       <h2>Payment history</h2><div id="ph">${loading}</div>`;
     packagesSection($('#pk')).catch(e => toast(e.message, true));
+    api('/following').then(d => {
+      $('#fl').innerHTML = d.creators.length ? `<div class="row" style="gap:10px">${d.creators.map(c => `<a class="owner" href="#/u/${esc(c.username)}" style="margin:0">${avatarHtml(c.username, c.avatar)}<b style="color:var(--ink);font-size:.9rem">${esc(c.username)}</b></a>`).join('')}</div>` : '<div class="empty">You aren\'t following anyone yet.</div>';
+    }).catch(e => { $('#fl').innerHTML = errBox(e.message); });
     api('/viewer/history').then(d => {
       $('#hist').innerHTML = d.history.length ? `<div class="grid">${d.history.map(h => `<a class="vcard" href="#/video/${esc(h.id)}"><div class="th">${h.thumb ? `<img src="${esc(h.thumb)}" alt="" loading="lazy">` : ''}<span class="tag ok">Unlocked</span></div><div class="bd"><div class="t">${esc(h.title)}</div><div class="small muted">${esc(h.owner || '')} · ${date(h.unlocked_at)} · ${num(h.points_spent)} pts</div></div></a>`).join('')}</div>` : '<div class="empty">You haven\'t unlocked any videos yet.</div>';
     }).catch(e => { $('#hist').innerHTML = errBox(e.message); });
@@ -578,6 +603,7 @@ route('profile', 'auth', async ({ root }) => {
     const b = d.balance || {};
     rs.innerHTML = `<div class="stats">
       <div class="stat"><span>Published videos</span><b>${num((d.videos || []).length)}</b></div>
+      <div class="stat"><span>Followers</span><b>${num(d.followers)}</b></div>
       <div class="stat"><span>Total views</span><b>${num(d.total_views)}</b></div>
       <div class="stat"><span>Total earnings</span><b>${usd(b.total_earned)}</b></div>
       <div class="stat"><span>Available balance</span><b>${usd(b.available)}</b></div>
@@ -595,10 +621,11 @@ route('u', null, async ({ root, args }) => {
   root.innerHTML = `<div class="stack"><div class="card row" style="flex-wrap:nowrap;gap:16px">${avatarHtml(d.username, d.avatar, 'lg')}
     <div><h1 style="margin:0">${esc(d.username)}</h1>
     <div class="row" style="gap:6px;margin:6px 0"><span class="badge" style="text-transform:capitalize">${esc(d.account_type)}</span><span class="badge" style="text-transform:capitalize">${esc(d.gender)}</span></div>
-    <div class="small muted">Joined ${date(d.created_at)}</div><button class="btn alt sm" id="sharepub" style="margin-top:8px">Share profile</button></div></div>
-    ${d.account_type === 'curator' ? `<div class="stats"><div class="stat"><span>Published videos</span><b>${num((d.videos || []).length)}</b></div><div class="stat"><span>Total views</span><b>${num(d.total_views)}</b></div></div>
+    <div class="small muted">Joined ${date(d.created_at)}${d.account_type === 'curator' ? ` · <span id="fcnt">${num(d.followers)} follower${d.followers === 1 ? '' : 's'}</span>` : ''}</div>${S.me && S.me.account_type === 'viewer' && d.account_type === 'curator' ? '<button class="btn sm" id="fol" style="margin-top:8px"></button> ' : ''}<button class="btn alt sm" id="sharepub" style="margin-top:8px">Share profile</button></div></div>
+    ${d.account_type === 'curator' ? `<div class="stats"><div class="stat"><span>Followers</span><b>${num(d.followers)}</b></div><div class="stat"><span>Published videos</span><b>${num((d.videos || []).length)}</b></div><div class="stat"><span>Total views</span><b>${num(d.total_views)}</b></div></div>
     <h2>Videos</h2>${(d.videos || []).length ? `<div class="grid">${d.videos.map(x => `<a class="vcard" href="#/video/${esc(x.id)}"><div class="th">${x.thumb ? `<img src="${esc(x.thumb)}" alt="" loading="lazy">` : ''}</div><div class="bd"><div class="t">${esc(x.title)}</div></div></a>`).join('')}</div>` : '<div class="empty">No videos yet.</div>'}` : ''}</div>`;
   $('#sharepub').onclick = () => shareProfile(d.username);
+  if ($('#fol')) followBtn($('#fol'), d.username, !!d.following, r => { $('#fcnt').textContent = num(r.followers) + ' follower' + (r.followers === 1 ? '' : 's'); });
   if (S.me && S.me.account_type === 'curator' && d.account_type === 'viewer') {
     $('#sharepub').insertAdjacentHTML('afterend', ' <button class="btn sm" id="msg-u" style="margin-top:8px">Message</button>');
     $('#msg-u').onclick = () => window.CV.composeMessage(d.username);
@@ -634,6 +661,7 @@ const LEGAL = {
     ['Adults only', 'Everyone appearing in content must be 18 or older and must have given clear consent to being filmed and published. We may ask for proof.'],
     ['Not allowed', 'Anyone under 18; non-consensual or secretly recorded content; violence, abuse, hate or harassment; illegal activity; content that infringes someone else\'s copyright or privacy.'],
     ['Your content', 'Upload only videos you own or have permission to share. Use accurate titles, descriptions and categories.'],
+    ['Paid pictures and videos', 'Creators may send a picture or video in messages. The viewer sees it locked and pays coins to open it. Sexually explicit or illegal material, and anyone under 18, are never allowed. Message media is deleted automatically after a set time.'],
     ['No contact details', 'Do not share phone numbers, emails, links or other apps (WhatsApp, Telegram, social handles) in messages, comments or live chat. Such messages are blocked automatically and repeated attempts may lead to suspension.'],
     ['Moderation', 'Videos may go live automatically and are reviewed afterwards. Viewers can report videos. We remove content that breaks these rules and may suspend the account.'],
     ['Reporting', 'Use the "Report this video" button on any video page.']]]

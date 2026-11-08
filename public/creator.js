@@ -14,6 +14,7 @@ route('dashboard', ['curator'], async ({ root }) => {
       <div class="stat"><span>Total video views</span><b>${num(t.total_views)}</b></div>
       <div class="stat"><span>Paid unlocks</span><b>${num(t.paid_unlocks)}</b></div>
       <div class="stat"><span>Free previews</span><b>${num(t.previews)}</b></div>
+      <div class="stat"><span>Followers</span><b>${num(t.followers)}</b></div>
       <div class="stat"><span>Live minutes watched</span><b>${num(t.live_minutes)}</b></div>
       <div class="stat"><span>Paid replies (${usd(d.settings.reply_batch_usd)} per ${num(d.settings.reply_batch_size)})</span><b>${num(t.reply_progress)}/${num(d.settings.reply_batch_size)}</b></div>
       <div class="stat"><span>Total earnings</span><b>${usd(t.total_earned)}</b></div>

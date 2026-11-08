@@ -288,6 +288,11 @@ app.get('/api/users/:username', optionalAuth, wrap(async (req, res) => {
     out.videos = (vids || []).map(v => ({ id: v.id, title: v.title, thumb: publicUrl('thumbs', v.thumb_path), created_at: v.created_at }));
     const { data: st } = await db.rpc('creator_video_stats', { p_creator: p.id });
     out.total_views = (st || []).reduce((a, v) => a + Number(v.previews) + Number(v.paid), 0);
+    out.followers = await followerCount(p.id);
+    if (req.profile && req.profile.account_type === 'viewer') {
+      const { data: f } = await db.from('follows').select('creator_id').eq('follower_id', req.profile.id).eq('creator_id', p.id).maybeSingle();
+      out.following = !!f;
+    }
     // financials are private: owner and admin only
     if (isOwner || isAdmin) {
       const { data: bal } = await db.rpc('creator_balance', { p_creator: p.id });
@@ -296,6 +301,35 @@ app.get('/api/users/:username', optionalAuth, wrap(async (req, res) => {
   }
   if (p.account_type === 'viewer' && (isOwner || isAdmin)) out.points_balance = p.points_balance;
   res.json(out);
+}));
+
+
+// ---------- follow curators ----------
+async function followerCount(creatorId) {
+  const { count } = await db.from('follows').select('creator_id', { count: 'exact', head: true }).eq('creator_id', creatorId);
+  return count || 0;
+}
+async function followedIds(viewerId) {
+  const { data } = await db.from('follows').select('creator_id').eq('follower_id', viewerId).limit(1000);
+  return (data || []).map(x => x.creator_id);
+}
+app.post('/api/follow/:username', auth, role('viewer'), rateLimit({ windowMs: 60 * 1000, max: 40, keyGenerator: req => req.user.id, message: { error: 'Slow down a little.' } }), wrap(async (req, res) => {
+  const { data: c } = await db.from('profiles').select('id,account_type,status').ilike('username', exactName(req.params.username)).maybeSingle();
+  if (!c || c.account_type !== 'curator' || c.status === 'deactivated') return res.status(404).json({ error: 'Creator not found' });
+  const on = (req.body || {}).follow !== false;
+  if (on) {
+    const { error } = await db.from('follows').upsert({ follower_id: req.profile.id, creator_id: c.id }, { onConflict: 'follower_id,creator_id', ignoreDuplicates: true });
+    if (error) throw new Error(error.message);
+  } else {
+    await db.from('follows').delete().eq('follower_id', req.profile.id).eq('creator_id', c.id);
+  }
+  res.json({ following: on, followers: await followerCount(c.id) });
+}));
+app.get('/api/following', auth, role('viewer'), wrap(async (req, res) => {
+  const ids = await followedIds(req.profile.id);
+  if (!ids.length) return res.json({ creators: [] });
+  const { data } = await db.from('profiles').select('id,username,avatar_url').in('id', ids).neq('status', 'deactivated').order('username');
+  res.json({ creators: (data || []).map(p => ({ username: p.username, avatar: avatarOf(p) })) });
 }));
 
 // ---------- videos: browse ----------
@@ -314,6 +348,11 @@ app.get('/api/videos', optionalAuth, wrap(async (req, res) => {
   let q = db.from('videos').select('id,title,category,thumb_path,price_points,created_at,owner:profiles(username,avatar_url)', { count: 'exact' })
     .eq('status', 'approved').order('created_at', { ascending: false }).range((page - 1) * size, page * size - 1);
   if (req.query.category && CATEGORIES.includes(req.query.category)) q = q.eq('category', req.query.category);
+  if (req.query.following === '1' && req.profile && req.profile.account_type === 'viewer') {
+    const ids = await followedIds(req.profile.id);
+    if (!ids.length) return res.json({ videos: [], total: 0, page, page_size: size });
+    q = q.in('owner_id', ids);
+  }
   const term = cleanQ(req.query.q);
   if (term) q = q.ilike('title', `%${term}%`);
   const { data, count, error } = await q;
@@ -347,7 +386,12 @@ app.get('/api/videos/:id', optionalAuth, wrap(async (req, res) => {
   }
   const life = Number(s.video_lifetime_hours) || 0;
   const expires_at = life > 0 && v.status === 'approved' && v.approved_at ? new Date(new Date(v.approved_at).getTime() + life * 3600000).toISOString() : null;
-  res.json({ ...videoCard(v, unlocked, Number(s.unlock_price_points)), description: v.description, status: v.status, preview_seconds: Number(s.preview_seconds), expires_at });
+  let following = null;
+  if (me && me.account_type === 'viewer') {
+    const { data: f } = await db.from('follows').select('creator_id').eq('follower_id', me.id).eq('creator_id', v.owner_id).maybeSingle();
+    following = !!f;
+  }
+  res.json({ ...videoCard(v, unlocked, Number(s.unlock_price_points)), description: v.description, status: v.status, preview_seconds: Number(s.preview_seconds), expires_at, following, followers: await followerCount(v.owner_id) });
 }));
 
 // Returns a signed playback URL: full file if unlocked/owner/admin, otherwise the short preview clip.
@@ -632,7 +676,7 @@ app.get('/api/creator/dashboard', auth, role('curator'), wrap(async (req, res) =
   }
   res.json({
     totals: {
-      live_minutes, live_streams: (myStreams || []).length, reply_progress: Number(req.profile.reply_progress) || 0,
+      followers: await followerCount(uid), live_minutes, live_streams: (myStreams || []).length, reply_progress: Number(req.profile.reply_progress) || 0,
       previews: videos.reduce((a, v) => a + v.previews, 0),
       paid_unlocks: videos.reduce((a, v) => a + v.paid, 0),
       total_views: videos.reduce((a, v) => a + v.previews + v.paid, 0),
@@ -748,14 +792,14 @@ app.put('/api/admin/videos/:id/price', ...admin, wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 
-const SETTING_KEYS = ['unlock_price_points', 'creator_rate_usd', 'min_withdrawal_usd', 'preview_seconds', 'usd_to_kes', 'video_lifetime_hours', 'auto_approve', 'live_points_per_minute', 'live_creator_rate_usd', 'message_reply_points', 'message_free_replies', 'reply_batch_size', 'reply_batch_usd'];
+const SETTING_KEYS = ['unlock_price_points', 'creator_rate_usd', 'min_withdrawal_usd', 'preview_seconds', 'usd_to_kes', 'video_lifetime_hours', 'auto_approve', 'live_points_per_minute', 'live_creator_rate_usd', 'message_reply_points', 'message_free_replies', 'reply_batch_size', 'reply_batch_usd', 'media_image_points', 'media_video_points', 'media_creator_rate_usd', 'media_lifetime_hours'];
 app.get('/api/admin/settings', ...admin, wrap(async (req, res) => res.json(await getSettings())));
 app.put('/api/admin/settings', ...admin, wrap(async (req, res) => {
   const body = req.body || {};
   for (const k of SETTING_KEYS) {
     if (body[k] === undefined) continue;
     const n = Number(body[k]);
-    const zeroOk = k === 'video_lifetime_hours' || k === 'auto_approve' || k === 'message_free_replies' || k === 'reply_batch_size' || k === 'reply_batch_usd';
+    const zeroOk = k === 'video_lifetime_hours' || k === 'auto_approve' || k === 'message_free_replies' || k === 'reply_batch_size' || k === 'reply_batch_usd' || k === 'media_lifetime_hours';
     if (zeroOk ? !(n >= 0) : !(n > 0)) return res.status(400).json({ error: `${k} must be ${zeroOk ? 'zero or a positive number' : 'a positive number'}` });
     await db.from('settings').upsert({ key: k, value: String(n), updated_at: new Date().toISOString() });
   }
@@ -934,9 +978,13 @@ async function kick(streamId, viewerId) {
 app.get('/api/live', optionalAuth, wrap(async (req, res) => {
   if (req.profile && req.profile.account_type === 'curator') return res.status(403).json({ error: 'Curators can\'t watch other creators\' live streams' });
   const since = new Date(Date.now() - 120000).toISOString();
-  const { data, error } = await db.from('streams').select('id,title,started_at,host:profiles(username,avatar_url)')
+  let { data, error } = await db.from('streams').select('id,title,started_at,host_id,host:profiles(username,avatar_url)')
     .eq('status', 'live').gt('last_ping', since).order('started_at', { ascending: false }).limit(60);
   if (error) throw new Error(error.message);
+  let fset = new Set();
+  if (req.profile && req.profile.account_type === 'viewer') fset = new Set(await followedIds(req.profile.id));
+  if (req.query.following === '1') data = data.filter(x => fset.has(x.host_id));
+  else data = [...data.filter(x => fset.has(x.host_id)), ...data.filter(x => !fset.has(x.host_id))];
   const counts = {};
   if (data.length) {
     const { data: ss } = await db.from('live_sessions').select('stream_id').is('ended_at', null).in('stream_id', data.map(x => x.id));
@@ -945,7 +993,7 @@ app.get('/api/live', optionalAuth, wrap(async (req, res) => {
   const s = await getSettings();
   res.json({
     price: Number(s.live_points_per_minute),
-    streams: data.map(x => ({ id: x.id, title: x.title, started_at: x.started_at, viewers: counts[x.id] || 0, host: x.host ? { username: x.host.username, avatar: avatarOf(x.host) } : null }))
+    streams: data.map(x => ({ id: x.id, title: x.title, started_at: x.started_at, viewers: counts[x.id] || 0, following: fset.has(x.host_id), host: x.host ? { username: x.host.username, avatar: avatarOf(x.host) } : null }))
   });
 }));
 
@@ -1135,9 +1183,80 @@ async function convMeta(c, me, s) {
   };
 }
 
+
+// ---------- paid pictures / videos in messages (curator -> viewer) ----------
+app.post('/api/messages/media-upload', auth, role('curator'), userLimiter(20, 'Too many uploads. Wait a moment.'), wrap(async (req, res) => {
+  const type = (req.body || {}).type === 'video' ? 'video' : 'image';
+  const path = `${req.profile.id}/${crypto.randomUUID()}.${type === 'video' ? 'mp4' : 'jpg'}`;
+  const r = await db.storage.from('dm').createSignedUploadUrl(path);
+  if (r.error) throw new Error(r.error.message);
+  res.json({ path, token: r.data.token, type });
+}));
+async function checkMedia(req, media) {
+  const uid = req.profile.id;
+  const type = media && media.type === 'video' ? 'video' : 'image';
+  const ext = type === 'video' ? 'mp4' : 'jpg';
+  const m = new RegExp(`^${uid}/([0-9a-f-]{36})\\.${ext}$`).exec(String(media.path || ''));
+  if (!m) return { error: 'Invalid media file' };
+  const { data: found } = await db.storage.from('dm').list(uid, { search: `${m[1]}.${ext}`, limit: 1 });
+  if (!found || !found.length) return { error: 'The file was not uploaded' };
+  const s = await getSettings();
+  const price = Number(type === 'video' ? s.media_video_points : s.media_image_points) || 100;
+  return { fields: { media_path: media.path, media_type: type, media_price: price } };
+}
+async function shapeMessage(m, me, unlockedIds) {
+  const out = { id: m.id, mine: m.sender_id === me.id, body: m.body, cost: m.cost, created_at: m.created_at };
+  if (m.media_type) {
+    const mine = m.sender_id === me.id;
+    const open = mine || unlockedIds.has(m.id);
+    out.media = { type: m.media_type, price: m.media_price, unlocked: open, expired: !m.media_path };
+    if (open && m.media_path) {
+      const { data } = await db.storage.from('dm').createSignedUrl(m.media_path, 3600);
+      out.media.url = data ? data.signedUrl : null;
+    }
+  }
+  return out;
+}
+async function unlockedSet(viewerId, msgs) {
+  const ids = msgs.filter(m => m.media_type).map(m => m.id);
+  if (!ids.length) return new Set();
+  const { data } = await db.from('message_unlocks').select('message_id').eq('viewer_id', viewerId).in('message_id', ids);
+  return new Set((data || []).map(x => x.message_id));
+}
+app.post('/api/messages/:id/unlock', auth, role('viewer'), userLimiter(30, 'Slow down a little.'), wrap(async (req, res) => {
+  const id = parseInt(req.params.id);
+  if (!id) return res.status(404).json({ error: 'Not found' });
+  const { data, error } = await db.rpc('unlock_message_media', { p_viewer: req.profile.id, p_message: id });
+  if (error) throw new Error(error.message);
+  if (!data.ok) return res.status(data.error === 'insufficient_points' ? 402 : 404).json({ ...data, error: data.error === 'insufficient_points' ? `This costs ${data.needed} points and you have ${data.balance}.` : 'Not found' });
+  const { data: m } = await db.from('messages').select('id,sender_id,body,cost,created_at,media_path,media_type,media_price').eq('id', id).single();
+  res.json({ ok: true, balance: data.balance, message: await shapeMessage(m, req.profile, new Set([id])) });
+}));
+async function expireMedia() {
+  const hrs = Number((await getSettings()).media_lifetime_hours) || 0;
+  if (hrs <= 0) return;
+  const cutoff = new Date(Date.now() - hrs * 3600000).toISOString();
+  const { data } = await db.from('messages').select('id,media_path').not('media_path', 'is', null).lt('created_at', cutoff).limit(50);
+  for (const m of data || []) {
+    try {
+      await db.storage.from('dm').remove([m.media_path]);
+      await db.from('messages').update({ media_path: null }).eq('id', m.id);
+    } catch (e) { console.error('expire media', m.id, e.message); }
+  }
+}
+
 app.get('/api/messages/unread', auth, dmRoles, wrap(async (req, res) => {
   const { data } = await db.rpc('unread_total', { p_user: req.profile.id });
-  res.json({ unread: Number(data || 0) });
+  let live_following = 0;
+  if (req.profile.account_type === 'viewer') {
+    const ids = await followedIds(req.profile.id);
+    if (ids.length) {
+      const since = new Date(Date.now() - 120000).toISOString();
+      const { count } = await db.from('streams').select('id', { count: 'exact', head: true }).eq('status', 'live').gt('last_ping', since).in('host_id', ids);
+      live_following = count || 0;
+    }
+  }
+  res.json({ unread: Number(data || 0), live_following });
 }));
 
 app.get('/api/conversations', auth, dmRoles, wrap(async (req, res) => {
@@ -1181,20 +1300,23 @@ app.get('/api/conversations/:id/messages', auth, dmRoles, wrap(async (req, res) 
   const c = await getConv(req.params.id, req.profile);
   if (!c) return res.status(404).json({ error: 'Conversation not found' });
   const after = parseInt(req.query.after) || 0;
-  const { data, error } = await db.from('messages').select('id,sender_id,body,cost,created_at').eq('conversation_id', c.id).gt('id', after).order('id', { ascending: true }).limit(200);
+  const { data, error } = await db.from('messages').select('id,sender_id,body,cost,created_at,media_path,media_type,media_price').eq('conversation_id', c.id).gt('id', after).order('id', { ascending: true }).limit(200);
   if (error) throw new Error(error.message);
   await db.from('messages').update({ read_at: new Date().toISOString() }).eq('conversation_id', c.id).neq('sender_id', req.profile.id).is('read_at', null);
   const s = await getSettings();
   const meta = await convMeta(c, req.profile, s);
-  res.json({ ...meta, messages: data.map(m => ({ id: m.id, mine: m.sender_id === req.profile.id, body: m.body, cost: m.cost, created_at: m.created_at })) });
+  const us = req.profile.account_type === 'viewer' ? await unlockedSet(req.profile.id, data) : new Set();
+  res.json({ ...meta, image_points: Number(s.media_image_points), video_points: Number(s.media_video_points), messages: await Promise.all(data.map(m => shapeMessage(m, req.profile, us))) });
 }));
 
 app.post('/api/conversations/:id/messages', auth, dmRoles, userLimiter(30, 'You\'re sending messages too fast.'), wrap(async (req, res) => {
   const c = await getConv(req.params.id, req.profile);
   if (!c) return res.status(404).json({ error: 'Conversation not found' });
   const body = cleanText((req.body || {}).body, 1000);
-  if (!body) return res.status(400).json({ error: 'Write a message first' });
-  if (await rejectContact(req, res, body, 'message')) return;
+  const media = (req.body || {}).media;
+  if (media && req.profile.account_type !== 'curator') return res.status(403).json({ error: 'Only creators can send pictures and videos' });
+  if (!body && !media) return res.status(400).json({ error: 'Write a message first' });
+  if (body && await rejectContact(req, res, body, 'message')) return;
   if (req.profile.account_type === 'viewer') {
     const { data, error } = await db.rpc('viewer_reply', { p_viewer: req.profile.id, p_conv: c.id, p_body: body });
     if (error) throw new Error(error.message);
@@ -1202,7 +1324,13 @@ app.post('/api/conversations/:id/messages', auth, dmRoles, userLimiter(30, 'You\
     return res.json(data);
   }
   if (c.blocked) return res.status(403).json({ error: 'This viewer has blocked messages from you' });
-  const { error } = await db.from('messages').insert({ conversation_id: c.id, sender_id: req.profile.id, body, cost: 0 });
+  let extra = {};
+  if (media) {
+    const chk = await checkMedia(req, media);
+    if (chk.error) return res.status(400).json({ error: chk.error });
+    extra = chk.fields;
+  }
+  const { error } = await db.from('messages').insert({ conversation_id: c.id, sender_id: req.profile.id, body, cost: 0, ...extra });
   if (error) throw new Error(error.message);
   await db.from('conversations').update({ last_message_at: new Date().toISOString() }).eq('id', c.id);
   res.json({ ok: true, cost: 0 });
@@ -1253,13 +1381,13 @@ async function sweepVideos() {
   const { data } = await db.from('videos').select('id').eq('status', 'approved').is('preview_path', null).limit(2);
   for (const v of data || []) { try { await generatePreview(v.id); } catch (e) { console.error('sweep preview', v.id, e.message); } }
 }
-const tick = () => expireVideos().catch(e => console.error('expireVideos', e.message)).then(() => sweepVideos()).catch(e => console.error('sweepVideos', e.message));
+const tick = () => expireVideos().catch(e => console.error('expireVideos', e.message)).then(() => sweepVideos()).catch(e => console.error('sweepVideos', e.message)).then(() => expireMedia()).catch(e => console.error('expireMedia', e.message));
 setInterval(tick, 10 * 60 * 1000);
 setTimeout(tick, 20000);
 
 // Make sure the storage buckets exist (creates them if the SQL step missed them)
 async function ensureBuckets() {
-  const want = [['videos', false], ['thumbs', true], ['avatars', true]];
+  const want = [['videos', false], ['thumbs', true], ['avatars', true], ['dm', false]];
   const { data, error } = await db.storage.listBuckets();
   if (error) { console.error('Storage check failed:', error.message); return; }
   const have = new Set((data || []).map(b => b.name));

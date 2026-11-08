@@ -115,6 +115,10 @@ const views = {
       <div class="field"><label>Messages: points per viewer reply after the free ones</label><input type="number" min="1" id="s11" value="${esc(s.message_reply_points || 3)}"></div>
       <div class="field"><label>Reply reward: paid viewer replies needed</label><input type="number" min="0" id="s12" value="${esc(s.reply_batch_size == null ? 10 : s.reply_batch_size)}"><div class="hint">Every this-many paid replies earn the creator the amount below. 0 turns it off. Free replies don't count.</div></div>
       <div class="field"><label>Reply reward: USD per batch</label><input type="number" step="0.001" min="0" id="s13" value="${esc(s.reply_batch_usd == null ? 0.01 : s.reply_batch_usd)}"></div>
+      <div class="field"><label>Message picture price (coins the viewer pays to open)</label><input type="number" min="1" id="s14" value="${esc(s.media_image_points == null ? 100 : s.media_image_points)}"></div>
+      <div class="field"><label>Message video price (coins)</label><input type="number" min="1" id="s15" value="${esc(s.media_video_points == null ? 100 : s.media_video_points)}"></div>
+      <div class="field"><label>Creator earning per opened picture/video (USD)</label><input type="number" step="0.001" min="0.001" id="s16" value="${esc(s.media_creator_rate_usd == null ? 0.002 : s.media_creator_rate_usd)}"></div>
+      <div class="field"><label>Delete message pictures/videos after (hours, 0 = keep)</label><input type="number" min="0" id="s17" value="${esc(s.media_lifetime_hours == null ? 24 : s.media_lifetime_hours)}"></div>
       <div class="field"><label>USD → KES rate (for payouts)</label><input type="number" step="0.01" min="1" id="s5" value="${esc(s.usd_to_kes)}"></div>
       <button class="btn">Save settings</button></form>
       <div class="card"><h2 style="margin-top:0">Points packages</h2>
@@ -123,7 +127,7 @@ const views = {
         <form class="row" id="nf" style="margin-top:12px"><input type="text" id="nn" placeholder="Name" style="width:120px"><input type="number" id="np" placeholder="Points" style="width:110px"><input type="number" id="nc" placeholder="Price KES" style="width:110px"><button class="btn sm">Add package</button></form></div></div>`;
     $('#sf').onsubmit = async e => {
       e.preventDefault();
-      try { await api('/admin/settings', { method: 'PUT', body: { unlock_price_points: $('#s1').value, creator_rate_usd: $('#s2').value, min_withdrawal_usd: $('#s3').value, preview_seconds: $('#s4').value, usd_to_kes: $('#s5').value, video_lifetime_hours: $('#s6').value, auto_approve: $('#s7').value, live_points_per_minute: $('#s8').value, live_creator_rate_usd: $('#s9').value, message_free_replies: $('#s10').value, message_reply_points: $('#s11').value, reply_batch_size: $('#s12').value, reply_batch_usd: $('#s13').value } }); toast('Settings saved'); }
+      try { await api('/admin/settings', { method: 'PUT', body: { unlock_price_points: $('#s1').value, creator_rate_usd: $('#s2').value, min_withdrawal_usd: $('#s3').value, preview_seconds: $('#s4').value, usd_to_kes: $('#s5').value, video_lifetime_hours: $('#s6').value, auto_approve: $('#s7').value, live_points_per_minute: $('#s8').value, live_creator_rate_usd: $('#s9').value, message_free_replies: $('#s10').value, message_reply_points: $('#s11').value, reply_batch_size: $('#s12').value, media_image_points: $('#s14').value, media_video_points: $('#s15').value, media_creator_rate_usd: $('#s16').value, media_lifetime_hours: $('#s17').value, reply_batch_usd: $('#s13').value } }); toast('Settings saved'); }
       catch (er) { toast(er.message, true); }
     };
     $$('.ps', el).forEach(b => b.onclick = async () => {
