@@ -99,3 +99,5 @@ Viewers and creators can turn on notifications (Profile page, or the one-time ba
 1. Run `supabase/migration_push.sql` once (also in `schema.sql`).
 2. Add env vars on Render: `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` (`mailto:` your email). Generate a pair with `npx web-push generate-vapid-keys`.
 3. Redeploy. iPhone users must first "Add to Home Screen" (iOS 16.4+). Dead devices are removed automatically.
+
+Admin -> Team & demo: each Team/demo account has a **Change picture** / **Picture** button (JPG, PNG or WebP, up to 1.5 MB, cropped square).

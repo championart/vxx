@@ -938,11 +938,12 @@ async function makeSpecialAccount(username, flag, gender, adminEmail) {
   return id;
 }
 app.get('/api/admin/team', ...admin, wrap(async (req, res) => {
-  const { data: team } = await db.from('profiles').select('id,username').eq('is_system', true).maybeSingle();
-  const { data: demo } = await db.from('profiles').select('id,username,created_at').eq('is_demo', true).order('username');
+  const { data: team } = await db.from('profiles').select('id,username,avatar_url').eq('is_system', true).maybeSingle();
+  const { data: demo } = await db.from('profiles').select('id,username,created_at,avatar_url').eq('is_demo', true).order('username');
   const s = await getSettings();
   res.json({
-    team: team || null, demo: demo || [],
+    team: team ? { id: team.id, username: team.username, avatar: avatarOf(team) } : null,
+    demo: (demo || []).map(p => ({ id: p.id, username: p.username, created_at: p.created_at, avatar: avatarOf(p) })),
     settings: { welcome_enabled: Number(s.welcome_enabled ?? 1), welcome_delay_seconds: Number(s.welcome_delay_seconds ?? 3), welcome_gap_seconds: Number(s.welcome_gap_seconds ?? 10), demo_enabled: Number(s.demo_enabled ?? 1), welcome_text: s.welcome_text || '' }
   });
 }));
@@ -982,6 +983,17 @@ app.post('/api/admin/demo', ...admin, wrap(async (req, res) => {
   }
   await audit(req.profile.id, 'demo_accounts_created', { created, skipped });
   res.json({ created, skipped });
+}));
+app.put('/api/admin/avatar/:id', ...admin, wrap(async (req, res) => {
+  const { data: p } = await db.from('profiles').select('id,is_demo,is_system,avatar_url').eq('id', req.params.id).maybeSingle();
+  if (!p || !(p.is_demo || p.is_system)) return res.status(404).json({ error: 'Team or demo account not found' });
+  const path_ = await saveAvatar(`${p.id}-${Date.now().toString(36)}`, (req.body || {}).avatar);   // new file name each time so browsers don't show the old picture
+  if (!path_) return res.status(400).json({ error: 'Choose a JPG, PNG or WebP image under 1.5 MB' });
+  const { error } = await db.from('profiles').update({ avatar_url: path_ }).eq('id', p.id);
+  if (error) throw new Error(error.message);
+  if (p.avatar_url && p.avatar_url !== path_) await db.storage.from('avatars').remove([p.avatar_url]).catch(() => {});
+  await audit(req.profile.id, 'special_avatar_changed', { id: p.id });
+  res.json({ ok: true, avatar: publicUrl('avatars', path_) });
 }));
 app.delete('/api/admin/demo/:id', ...admin, wrap(async (req, res) => {
   const { data: p } = await db.from('profiles').select('id,is_demo').eq('id', req.params.id).maybeSingle();

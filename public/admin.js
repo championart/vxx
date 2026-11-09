@@ -1,7 +1,7 @@
 /* Admin dashboard */
 (() => {
 'use strict';
-const { api, route, esc, num, usd, kes, date, dtime, toast, modal, closeModal, loading, errBox, avatarHtml, busy, $, $$ } = window.CV;
+const { resizeImage, api, route, esc, num, usd, kes, date, dtime, toast, modal, closeModal, loading, errBox, avatarHtml, busy, $, $$ } = window.CV;
 const badge = s => `<span class="badge ${esc(s)}">${esc(s)}</span>`;
 const TABS = [['overview', 'Overview'], ['users', 'Users'], ['videos', 'Videos'], ['live', 'Live'], ['payments', 'Payments'], ['withdrawals', 'Withdrawals'], ['settings', 'Pricing & settings'], ['team', 'Team & demo'], ['reports', 'Reports'], ['audit', 'Audit log']];
 
@@ -106,7 +106,7 @@ const views = {
     el.innerHTML = `<div class="stack">
       <div class="card"><h2 style="margin-top:0">VIDXX Team account</h2>
         <p class="muted small" style="margin-top:0">An official, clearly labelled account that sends new viewers a few welcome messages. Replies to it are always free. It cannot earn money and does not appear in rankings.</p>
-        ${d.team ? `<p>Account: <b>${esc(d.team.username)}</b> <span class="badge ok">Active</span></p>` : '<button class="btn" id="mkteam">Create the VIDXX Team account</button>'}
+        ${d.team ? `<div class="row" style="flex-wrap:nowrap;gap:12px;margin-bottom:10px">${avatarHtml(d.team.username, d.team.avatar, 'lg')}<div><b>${esc(d.team.username)}</b> <span class="badge ok">Active</span><div style="margin-top:6px"><label class="btn alt sm" style="cursor:pointer">Change picture<input type="file" class="avin" data-id="${esc(d.team.id)}" accept="image/jpeg,image/png,image/webp" hidden></label></div></div></div>` : '<button class="btn" id="mkteam">Create the VIDXX Team account</button>'}
         <form id="wf" class="stack">
           <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="w1" ${s.welcome_enabled ? 'checked' : ''}> Send welcome messages to new viewers</label>
           <div class="field"><label>Seconds after a viewer joins before the first message</label><input type="number" min="0" id="w2" value="${esc(s.welcome_delay_seconds)}"></div>
@@ -119,7 +119,7 @@ const views = {
         <form id="df" class="stack"><div class="field"><label>Usernames to create (separated by spaces, commas or new lines, up to 40; letters, numbers, underscore)</label><textarea id="d2" rows="3" placeholder="Amina_K Wanjiru_L Njeri_M"></textarea></div>
           <div class="field"><label>Gender shown</label><select id="d3"><option value="female">Female</option><option value="male">Male</option><option value="transgender">Transgender</option></select></div>
           <button class="btn alt">Create demo accounts</button></form>
-        <div id="dl" style="margin-top:12px">${d.demo.length ? `<div class="tablewrap"><table><thead><tr><th>Username</th><th>Created</th><th></th></tr></thead><tbody>${d.demo.map(p => `<tr><td>${esc(p.username)}</td><td>${date(p.created_at)}</td><td><button class="btn alt sm dd" data-id="${esc(p.id)}">Delete</button></td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">No demo accounts yet.</div>'}</div></div></div>`;
+        <div id="dl" style="margin-top:12px">${d.demo.length ? `<div class="tablewrap"><table><thead><tr><th>Username</th><th>Created</th><th></th></tr></thead><tbody>${d.demo.map(p => `<tr><td><span class="row" style="flex-wrap:nowrap;gap:8px">${avatarHtml(p.username, p.avatar)}${esc(p.username)}</span></td><td>${date(p.created_at)}</td><td><label class="btn alt sm" style="cursor:pointer">Picture<input type="file" class="avin" data-id="${esc(p.id)}" accept="image/jpeg,image/png,image/webp" hidden></label> <button class="btn alt sm dd" data-id="${esc(p.id)}">Delete</button></td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">No demo accounts yet.</div>'}</div></div></div>`;
     const reload = () => views.team(el);
     const mk = $('#mkteam'); if (mk) mk.onclick = async () => { busy(mk, true, 'Creating…'); try { await api('/admin/team/create', { method: 'POST' }); toast('Team account created'); reload(); } catch (e) { toast(e.message, true); busy(mk, false); } };
     $('#wf').onsubmit = async e => { e.preventDefault(); try { await api('/admin/welcome', { method: 'PUT', body: { welcome_enabled: $('#w1').checked ? 1 : 0, welcome_delay_seconds: $('#w2').value, welcome_gap_seconds: $('#w3').value, welcome_text: $('#w4').value } }); toast('Saved'); } catch (er) { toast(er.message, true); } };
@@ -131,6 +131,14 @@ const views = {
         toast(`Created ${r.created.length}` + (r.skipped.length ? `, skipped: ${r.skipped.join(', ')}` : ''), r.created.length === 0); reload();
       } catch (er) { toast(er.message, true); }
     };
+    $$('.avin', el).forEach(inp => inp.onchange = async e => {
+      const f = e.target.files[0]; if (!f) return;
+      try {
+        const r = await resizeImage(f, 256, 256);
+        await api('/admin/avatar/' + encodeURIComponent(inp.dataset.id), { method: 'PUT', body: { avatar: r.dataUrl } });
+        toast('Picture updated'); reload();
+      } catch (er) { toast(er.message, true); }
+    });
     $$('.dd', el).forEach(b => b.onclick = async () => { if (!confirm('Delete this demo account?')) return; try { await api('/admin/demo/' + encodeURIComponent(b.dataset.id), { method: 'DELETE' }); reload(); } catch (er) { toast(er.message, true); } });
   },
   async settings(el) {
