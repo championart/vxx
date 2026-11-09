@@ -336,7 +336,8 @@ async function ensureConversation(curatorId, viewerId) {
 async function sendWelcome(viewerId) {
   const s = await getSettings();
   if (Number(s.welcome_enabled ?? 1) !== 1) return;
-  const { data: team } = await db.from('profiles').select('id').eq('is_system', true).limit(1).maybeSingle();
+  const { data: teamRows } = await db.from('profiles').select('id,username').eq('is_system', true).limit(1);
+  const team = (teamRows || [])[0];
   if (!team) return;   // no Team account yet: do not mark as welcomed
   const { data: claimed } = await db.from('profiles').update({ welcomed_at: new Date().toISOString() }).eq('id', viewerId).is('welcomed_at', null).select('id');
   if (!claimed || !claimed.length) return;
@@ -348,7 +349,7 @@ async function sendWelcome(viewerId) {
     try {
       await db.from('messages').insert({ conversation_id: c.id, sender_id: team.id, body, cost: 0 });
       await db.from('conversations').update({ last_message_at: new Date().toISOString() }).eq('id', c.id);
-      if (i === 0) notifyMessage(viewerId, 'VIDXX Team', c.id, body);
+      if (i === 0) notifyMessage(viewerId, team.username.replace(/_/g, ' '), c.id, body);
     } catch (e) { console.error('welcome send', e.message); }
   }, delay + i * gap));
 }
@@ -938,8 +939,12 @@ async function makeSpecialAccount(username, flag, gender, adminEmail) {
   return id;
 }
 app.get('/api/admin/team', ...admin, wrap(async (req, res) => {
-  const { data: team } = await db.from('profiles').select('id,username,avatar_url').eq('is_system', true).maybeSingle();
-  const { data: demo } = await db.from('profiles').select('id,username,created_at,avatar_url').eq('is_demo', true).order('username');
+  const tr = await db.from('profiles').select('id,username,avatar_url').eq('is_system', true).order('created_at').limit(1);
+  if (tr.error) throw new Error(tr.error.message);
+  const team = (tr.data || [])[0] || null;
+  const dr = await db.from('profiles').select('id,username,created_at,avatar_url').eq('is_demo', true).order('username');
+  if (dr.error) throw new Error(dr.error.message);
+  const demo = dr.data;
   const s = await getSettings();
   res.json({
     team: team ? { id: team.id, username: team.username, avatar: avatarOf(team) } : null,
@@ -948,7 +953,9 @@ app.get('/api/admin/team', ...admin, wrap(async (req, res) => {
   });
 }));
 app.post('/api/admin/team/create', ...admin, wrap(async (req, res) => {
-  const { data: have } = await db.from('profiles').select('id').eq('is_system', true).maybeSingle();
+  const hr = await db.from('profiles').select('id').eq('is_system', true).limit(1);
+  if (hr.error) throw new Error(hr.error.message);
+  const have = (hr.data || [])[0];
   if (have) return res.status(409).json({ error: 'The VIDXX Team account already exists' });
   const { data: taken } = await db.from('profiles').select('id').ilike('username', 'VIDXX_Team').maybeSingle();
   if (taken) return res.status(409).json({ error: 'The username VIDXX_Team is already taken' });
@@ -983,6 +990,18 @@ app.post('/api/admin/demo', ...admin, wrap(async (req, res) => {
   }
   await audit(req.profile.id, 'demo_accounts_created', { created, skipped });
   res.json({ created, skipped });
+}));
+app.put('/api/admin/rename/:id', ...admin, wrap(async (req, res) => {
+  const name = String((req.body || {}).username || '').trim();
+  if (!/^[A-Za-z0-9_]{3,20}$/.test(name)) return res.status(400).json({ error: 'Name must be 3-20 letters, numbers or underscores' });
+  const { data: p } = await db.from('profiles').select('id,username,is_demo,is_system').eq('id', req.params.id).maybeSingle();
+  if (!p || !(p.is_demo || p.is_system)) return res.status(404).json({ error: 'Team or demo account not found' });
+  const { data: taken } = await db.from('profiles').select('id').ilike('username', exactName(name)).neq('id', p.id).maybeSingle();
+  if (taken) return res.status(409).json({ error: 'That name is already taken' });
+  const { error } = await db.from('profiles').update({ username: name }).eq('id', p.id);
+  if (error) throw new Error(error.message);
+  await audit(req.profile.id, 'special_renamed', { id: p.id, from: p.username, to: name });
+  res.json({ ok: true, username: name });
 }));
 app.put('/api/admin/avatar/:id', ...admin, wrap(async (req, res) => {
   const { data: p } = await db.from('profiles').select('id,is_demo,is_system,avatar_url').eq('id', req.params.id).maybeSingle();
