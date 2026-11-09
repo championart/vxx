@@ -18,7 +18,8 @@
     "express": "^4.19.2",
     "express-rate-limit": "^7.4.0",
     "helmet": "^7.1.0",
-    "livekit-server-sdk": "^2.19.2"
+    "livekit-server-sdk": "^2.19.2",
+    "web-push": "^3.6.7"
   },
   "optionalDependencies": {
     "ffmpeg-static": "^5.2.0"

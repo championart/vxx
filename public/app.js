@@ -408,6 +408,7 @@ route('explore', null, async ({ root, query }) => {
     <div class="tabs" id="xt"><button data-t="videos" class="${tab === 'videos' ? 'on' : ''}">Videos</button><button data-t="live" class="${tab === 'live' ? 'on' : ''}">Live</button></div>
     <div id="xbody"></div>`;
   const body = $('#xbody');
+  if (window.CV.pushBanner) window.CV.pushBanner($('#xt').parentNode);
   const showVideos = async () => {
     const st = { q: '', page: 1, following: false };
     body.innerHTML = `<input type="search" id="q" placeholder="Search videos" aria-label="Search videos" style="margin-bottom:12px">
@@ -597,9 +598,11 @@ route('profile', 'auth', async ({ root }) => {
       <div class="row" style="gap:6px;margin:6px 0"><span class="badge" style="text-transform:capitalize">${esc(me.account_type)}</span><span class="badge" style="text-transform:capitalize">${esc(me.gender)}</span></div>
       <div class="small muted">Joined ${date(me.created_at)} · ${esc(me.email)}</div>
       <label class="btn alt sm" style="margin-top:8px;cursor:pointer">Change photo<input type="file" id="newav" accept="image/jpeg,image/png,image/webp" hidden></label> <button class="btn alt sm" id="shareme" style="margin-top:8px">Share profile</button></div></div>
+    <div id="pushcard"></div>
     <div id="role-sections"></div>
     <div class="small muted">Account type can only be changed by an admin. <button class="btn alt sm" id="lo" style="margin-left:6px">Log out</button></div></div>`;
   $('#lo').onclick = () => logout();
+  if (window.CV.pushControls && ['viewer', 'curator'].includes(me.account_type)) window.CV.pushControls($('#pushcard'));
   $('#shareme').onclick = () => shareProfile(me.username);
   $('#newav').onchange = async e => {
     const f = e.target.files[0]; if (!f) return;

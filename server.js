@@ -258,6 +258,71 @@ app.post('/api/refresh', wrap(async (req, res) => {
 }));
 
 
+
+// ---------- web push (free; needs VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY) ----------
+const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || '';
+const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || '';
+const webpush = (() => { try { return require('web-push'); } catch (_) { return null; } })();
+const pushReady = !!(webpush && VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY);
+if (pushReady) webpush.setVapidDetails(process.env.VAPID_SUBJECT || 'mailto:admin@vidxx.app', VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
+else console.log('Web push is off: set VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY to turn it on.');
+
+async function pushTo(userIds, payload) {
+  if (!pushReady) return 0;
+  const ids = [...new Set([].concat(userIds))].filter(Boolean);
+  if (!ids.length) return 0;
+  const { data: subs } = await db.from('push_subscriptions').select('id,endpoint,p256dh,auth').in('user_id', ids).limit(5000);
+  let sent = 0;
+  const text = JSON.stringify(payload);
+  await Promise.all((subs || []).map(async s => {
+    try {
+      await webpush.sendNotification({ endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } }, text, { TTL: 3600 });
+      sent++;
+    } catch (e) {
+      if (e && (e.statusCode === 404 || e.statusCode === 410)) await db.from('push_subscriptions').delete().eq('id', s.id);   // device unsubscribed
+      else console.error('push failed:', e && e.statusCode, e && e.message);
+    }
+  }));
+  return sent;
+}
+const pushThrottle = new Map();
+function notifyMessage(recipientId, senderName, convId, body, mediaType) {
+  if (!pushReady) return;
+  const key = convId + ':' + recipientId, now = Date.now();
+  if (now - (pushThrottle.get(key) || 0) < 60000) return;   // at most one buzz per conversation per minute
+  pushThrottle.set(key, now);
+  if (pushThrottle.size > 5000) pushThrottle.clear();
+  const text = body ? String(body).slice(0, 90) : (mediaType === 'video' ? 'Sent you a video' : 'Sent you a picture');
+  pushTo(recipientId, { title: `New message from ${senderName}`, body: text, url: '#/messages/' + convId, tag: 'msg-' + convId }).catch(e => console.error('notifyMessage', e.message));
+}
+async function notifyFollowersLive(host, stream) {
+  if (!pushReady) return;
+  const { data } = await db.from('follows').select('follower_id').eq('creator_id', host.id).limit(5000);
+  const ids = (data || []).map(x => x.follower_id);
+  if (!ids.length) return;
+  await pushTo(ids, { title: `${host.username} is live now`, body: stream.title, url: '#/live/' + stream.id, tag: 'live-' + stream.id });
+}
+app.get('/api/push/key', (req, res) => res.json({ publicKey: pushReady ? VAPID_PUBLIC_KEY : null }));
+app.post('/api/push/subscribe', auth, wrap(async (req, res) => {
+  if (!pushReady) return res.status(503).json({ error: 'Notifications are not set up on the server yet' });
+  const { endpoint, keys } = req.body || {};
+  if (typeof endpoint !== 'string' || !/^https:\/\//.test(endpoint) || endpoint.length > 1000 || !keys || typeof keys.p256dh !== 'string' || typeof keys.auth !== 'string')
+    return res.status(400).json({ error: 'Invalid subscription' });
+  const { error } = await db.from('push_subscriptions').upsert({ user_id: req.profile.id, endpoint, p256dh: keys.p256dh.slice(0, 200), auth: keys.auth.slice(0, 100), user_agent: String(req.headers['user-agent'] || '').slice(0, 200) }, { onConflict: 'endpoint' });
+  if (error) throw new Error(error.message);
+  const { count } = await db.from('push_subscriptions').select('id', { count: 'exact', head: true }).eq('user_id', req.profile.id);
+  if ((count || 0) > 10) { // keep the 10 newest devices
+    const { data: old } = await db.from('push_subscriptions').select('id').eq('user_id', req.profile.id).order('created_at', { ascending: true }).limit(count - 10);
+    if (old && old.length) await db.from('push_subscriptions').delete().in('id', old.map(o => o.id));
+  }
+  res.json({ ok: true });
+}));
+app.post('/api/push/unsubscribe', auth, wrap(async (req, res) => {
+  const endpoint = String((req.body || {}).endpoint || '');
+  if (endpoint) await db.from('push_subscriptions').delete().eq('user_id', req.profile.id).eq('endpoint', endpoint);
+  res.json({ ok: true });
+}));
+
 // ---------- VIDXX Team welcome messages (automated, clearly labelled, always free to reply) ----------
 async function ensureConversation(curatorId, viewerId) {
   let { data: c } = await db.from('conversations').select('*').eq('curator_id', curatorId).eq('viewer_id', viewerId).maybeSingle();
@@ -283,6 +348,7 @@ async function sendWelcome(viewerId) {
     try {
       await db.from('messages').insert({ conversation_id: c.id, sender_id: team.id, body, cost: 0 });
       await db.from('conversations').update({ last_message_at: new Date().toISOString() }).eq('id', c.id);
+      if (i === 0) notifyMessage(viewerId, 'VIDXX Team', c.id, body);
     } catch (e) { console.error('welcome send', e.message); }
   }, delay + i * gap));
 }
@@ -1134,6 +1200,7 @@ app.post('/api/live/start', auth, role('curator'), needLive, wrap(async (req, re
     }
     st = data;
     await audit(me.id, 'live_started', { stream: st.id });
+    notifyFollowersLive(me, st).catch(e => console.error('notifyFollowersLive', e.message));
   } else {
     await db.from('streams').update({ last_ping: new Date().toISOString() }).eq('id', st.id);
   }
@@ -1412,6 +1479,7 @@ app.post('/api/messages/send', auth, role('curator'), userLimiter(20, 'You\'re s
   const { error } = await db.from('messages').insert({ conversation_id: c.id, sender_id: req.profile.id, body, cost: 0 });
   if (error) throw new Error(error.message);
   await db.from('conversations').update({ last_message_at: new Date().toISOString() }).eq('id', c.id);
+  notifyMessage(c.viewer_id, req.profile.username, c.id, body);
   res.json({ ok: true, conversation_id: c.id });
 }));
 
@@ -1445,6 +1513,7 @@ app.post('/api/conversations/:id/messages', auth, dmRoles, userLimiter(30, 'You\
     const { data, error } = await db.rpc('viewer_reply', { p_viewer: req.profile.id, p_conv: c.id, p_body: body });
     if (error) throw new Error(error.message);
     if (!data.ok) return replyFail(res, data);
+    notifyMessage(c.curator_id, req.profile.username, c.id, body);
     return res.json(data);
   }
   if (c.blocked) return res.status(403).json({ error: 'This viewer has blocked messages from you' });
@@ -1458,6 +1527,7 @@ app.post('/api/conversations/:id/messages', auth, dmRoles, userLimiter(30, 'You\
   const { error } = await db.from('messages').insert({ conversation_id: c.id, sender_id: req.profile.id, body, cost: 0, ...extra });
   if (error) throw new Error(error.message);
   await db.from('conversations').update({ last_message_at: new Date().toISOString() }).eq('id', c.id);
+  notifyMessage(c.viewer_id, req.profile.username, c.id, body, extra.media_type);
   res.json({ ok: true, cost: 0 });
 }));
 
@@ -1484,6 +1554,7 @@ app.post('/api/conversations/start', auth, role('viewer'), userLimiter(10, 'Too 
     if (!existing) await db.from('conversations').delete().eq('id', c.id);   // don't leave an empty conversation behind
     return replyFail(res, data);
   }
+  notifyMessage(cur.id, req.profile.username, c.id, body);
   res.json({ ...data, conversation_id: c.id });
 }));
 

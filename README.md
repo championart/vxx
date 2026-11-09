@@ -93,3 +93,9 @@ Viewers have a "Creators" tab (between Explore and Buy Points). It lists active 
 
 ## Viewers can start conversations
 A viewer can tap **Message** on a creator's profile (or the Creators tab). Same payment rule as replies: the first `message_free_replies` messages in a conversation are free, then `message_reply_points` each; creators earn the reply reward on paid ones. Creators can **Block** a viewer inside the conversation (viewer can't message them until unblocked). Limits: 10 new messages/minute, 20 new conversations per viewer per day; demo and team accounts can't be messaged; the contact-detail filter applies. Run `supabase/migration_viewer_start.sql` once (also in `schema.sql`).
+
+## Web push notifications (free)
+Viewers and creators can turn on notifications (Profile page, or the one-time banner). Alerts: new message, and a followed creator going live (once per stream). Needs HTTPS.
+1. Run `supabase/migration_push.sql` once (also in `schema.sql`).
+2. Add env vars on Render: `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` (`mailto:` your email). Generate a pair with `npx web-push generate-vapid-keys`.
+3. Redeploy. iPhone users must first "Add to Home Screen" (iOS 16.4+). Dead devices are removed automatically.

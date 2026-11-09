@@ -361,6 +361,7 @@ route('messages', ['viewer', 'curator'], async ({ root, args }) => {
       <div class="muted small msg-last">${esc(c.last_body || '')}</div></div>${c.unread ? `<b class="dot" style="position:static">${c.unread > 9 ? '9+' : c.unread}</b>` : ''}</a>`).join('')
       : `<div class="empty">No messages yet.${isCur ? '' : ' When a creator writes to you, it will show up here.'}</div>`}</div></div>`;
   const nb = $('#newmsg'); if (nb) nb.onclick = () => composeMessage('');
+  if (window.CV.pushBanner && root.firstElementChild) window.CV.pushBanner(root.firstElementChild);
 });
 
 let sbLoad = null;
