@@ -101,3 +101,7 @@ Viewers and creators can turn on notifications (Profile page, or the one-time ba
 3. Redeploy. iPhone users must first "Add to Home Screen" (iOS 16.4+). Dead devices are removed automatically.
 
 Admin -> Team & demo: each Team/demo account has a **Change picture** / **Picture** button (JPG, PNG or WebP, up to 1.5 MB, cropped square).
+
+## Message sound and admin announcements
+- **Sound:** a short "ding" (generated in the browser, no file) plays when a new message or announcement arrives while the app is open; users can turn it off or test it on their Profile page. Browsers only allow sound after the page has been tapped once. When the app is closed, the phone's own notification sound is used (set by the phone, not by the website).
+- **Announcements:** Admin -> Send message. Send to everyone, all viewers, all creators, or one username. It appears at the top of their Messages page as an official announcement (one-way) and sends a push notification. Run `supabase/migration_announce.sql` once (also in `schema.sql`).

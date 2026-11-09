@@ -6,14 +6,20 @@ self.addEventListener('push', event => {
   let d = {};
   try { d = event.data ? event.data.json() : {}; } catch (_) { d = { title: 'VIDXX', body: event.data ? event.data.text() : '' }; }
   const title = String(d.title || 'VIDXX').slice(0, 80);
-  event.waitUntil(self.registration.showNotification(title, {
+  event.waitUntil((async () => {
+    const wins = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    const visible = wins.filter(c => c.visibilityState === 'visible');
+    wins.forEach(c => c.postMessage({ type: 'vidxx-push' }));   // open pages play the message sound
+    if (visible.length) return;                                 // the person is looking at the app: no banner needed
+    await self.registration.showNotification(title, {
     body: String(d.body || '').slice(0, 140),
     icon: 'icon-192.png',
     badge: 'badge-96.png',
     tag: d.tag || undefined,
     renotify: !!d.tag,
     data: { url: typeof d.url === 'string' ? d.url : '' }
-  }));
+    });
+  })());
 });
 
 self.addEventListener('notificationclick', event => {

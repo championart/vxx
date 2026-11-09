@@ -4,6 +4,33 @@
 const { S, api, route, esc, num, date, toast, modal, closeModal, loading, errBox, avatarHtml, busy, go, renderTopRight, updateNav, icon, $, $$ } = window.CV;
 
 const attached = el => !!el && document.body.contains(el);
+
+// ---------- message sound (generated with WebAudio, no file needed) ----------
+let actx = null;
+const soundOn = () => { try { return localStorage.getItem('cv_sound') !== '0'; } catch (_) { return true; } };
+const setSound = on => { try { localStorage.setItem('cv_sound', on ? '1' : '0'); } catch (_) {} };
+function unlockAudio() {
+  try {
+    const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return;
+    if (!actx) actx = new AC();
+    if (actx.state === 'suspended') actx.resume();
+  } catch (_) { /* ignore */ }
+}
+['pointerdown', 'keydown', 'touchstart'].forEach(ev => window.addEventListener(ev, unlockAudio, { passive: true }));
+function ding(force) {
+  if (!force && !soundOn()) return;
+  try {
+    if (!actx || actx.state !== 'running') return;   // the browser only allows sound after the user has tapped the page once
+    const t = actx.currentTime;
+    [[880, 0], [1318.5, 0.14]].forEach(([f, d]) => {
+      const o = actx.createOscillator(), g = actx.createGain();
+      o.type = 'sine'; o.frequency.value = f;
+      g.gain.setValueAtTime(0.0001, t + d); g.gain.exponentialRampToValueAtTime(0.3, t + d + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, t + d + 0.45);
+      o.connect(g).connect(actx.destination); o.start(t + d); o.stop(t + d + 0.5);
+    });
+  } catch (_) { /* ignore */ }
+}
+try { if (navigator.serviceWorker && navigator.serviceWorker.addEventListener) navigator.serviceWorker.addEventListener('message', e => { if (e.data && e.data.type === 'vidxx-push') { ding(); refreshUnread(true); } }); } catch (_) { /* ignore */ }
 const ago = d => {
   const s = Math.max(0, (Date.now() - new Date(d).getTime()) / 1000);
   if (s < 60) return 'just now';
@@ -356,10 +383,16 @@ route('messages', ['viewer', 'curator'], async ({ root, args }) => {
   root.innerHTML = `<div class="stack"><div class="row between"><h1 style="margin:0">Messages</h1>${isCur ? '<button class="btn sm" id="newmsg">New message</button>' : ''}</div>
     ${isCur ? `<p class="muted small" style="margin:0">You can message any viewer for free. Find a viewer by username, or tap Message on their profile. You also earn $${d.reply_batch_usd} for every ${d.reply_batch_size} paid replies from viewers.</p>`
       : `<p class="muted small" style="margin:0">Message any creator from their profile or the Creators tab. Your first ${d.free_replies} ${d.free_replies === 1 ? 'message' : 'messages'} in each conversation are free, then each costs ${d.reply_cost} points. Creators message you for free.</p>`}
+    <div id="ann"></div>
     <div id="inbox">${d.conversations.length ? d.conversations.map(c => `<a class="card msg-row" href="#/messages/${esc(c.id)}">${avatarHtml(c.other.username, c.other.avatar)}
       <div style="min-width:0;flex:1"><div class="row between" style="flex-wrap:nowrap"><b>${esc(c.other.username)}${c.other.system ? ' <span class="badge ok">Official</span>' : ''}</b><span class="muted small">${ago(c.last_at)}</span></div>
       <div class="muted small msg-last">${esc(c.last_body || '')}</div></div>${c.unread ? `<b class="dot" style="position:static">${c.unread > 9 ? '9+' : c.unread}</b>` : ''}</a>`).join('')
       : `<div class="empty">No messages yet.${isCur ? '' : ' When a creator writes to you, it will show up here.'}</div>`}</div></div>`;
+  api('/announcements').then(a => {
+    const box = $('#ann'); if (!box || !a.announcements.length) return;
+    box.innerHTML = `<div class="stack" style="margin-bottom:12px"><div class="small muted"><b>Announcements from VIDXX Team</b></div>${a.announcements.slice(0, 8).map(x => `<div class="card" style="${x.unread ? 'border-color:var(--accent)' : ''}"><div class="row between" style="flex-wrap:nowrap;gap:8px"><span class="badge ok">Official</span><span class="muted small">${ago(x.created_at)}</span></div><div style="margin-top:6px;white-space:pre-wrap">${esc(x.body)}</div></div>`).join('')}</div>`;
+    if (a.announcements.some(x => x.unread)) api('/announcements/read', { method: 'POST' }).then(() => refreshUnread(true)).catch(() => {});
+  }).catch(() => {});
   const nb = $('#newmsg'); if (nb) nb.onclick = () => composeMessage('');
   if (window.CV.pushBanner && root.firstElementChild) window.CV.pushBanner(root.firstElementChild);
 });
@@ -491,6 +524,7 @@ async function thread(root, convId) {
     const d = await api('/conversations/' + encodeURIComponent(convId) + '/messages?after=' + lastId);
     const changed = d.blocked !== meta.blocked || d.curator_blocked !== meta.curator_blocked;
     meta = d;
+    if (d.messages.some(m => !m.mine && m.id > lastId)) ding();
     addMsgs(d.messages);
     if (changed) drawComposer();
   };
@@ -513,13 +547,15 @@ async function refreshUnread(force) {
   lastUnreadCheck = Date.now();
   try {
     const d = await api('/messages/unread');
-    const lf = d.live_following || 0;
-    if (d.unread !== S.unread || lf !== (S.liveFollowing || 0)) { S.unread = d.unread; S.liveFollowing = lf; updateNav(); }
+    const lf = d.live_following || 0, total = (d.unread || 0) + (d.announcements || 0);
+    if (S.unreadSeen != null && total > S.unreadSeen) ding();
+    S.unreadSeen = total;
+    if (total !== S.unread || lf !== (S.liveFollowing || 0)) { S.unread = total; S.liveFollowing = lf; updateNav(); }
   } catch (_) { /* ignore */ }
 }
 window.addEventListener('hashchange', () => refreshUnread(false));
-setInterval(() => refreshUnread(true), 30000);
+setInterval(() => refreshUnread(true), 15000);
 window.addEventListener('DOMContentLoaded', () => setTimeout(() => refreshUnread(true), 1500));
 
-Object.assign(window.CV, { comments, liveList, composeMessage, composeToCreator });
+Object.assign(window.CV, { comments, liveList, composeMessage, composeToCreator, ding, soundOn, setSound, unlockAudio });
 })();

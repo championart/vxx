@@ -3,7 +3,7 @@
 'use strict';
 const { resizeImage, api, route, esc, num, usd, kes, date, dtime, toast, modal, closeModal, loading, errBox, avatarHtml, busy, $, $$ } = window.CV;
 const badge = s => `<span class="badge ${esc(s)}">${esc(s)}</span>`;
-const TABS = [['overview', 'Overview'], ['users', 'Users'], ['videos', 'Videos'], ['live', 'Live'], ['payments', 'Payments'], ['withdrawals', 'Withdrawals'], ['settings', 'Pricing & settings'], ['team', 'Team & demo'], ['reports', 'Reports'], ['audit', 'Audit log']];
+const TABS = [['overview', 'Overview'], ['users', 'Users'], ['videos', 'Videos'], ['live', 'Live'], ['payments', 'Payments'], ['withdrawals', 'Withdrawals'], ['settings', 'Pricing & settings'], ['team', 'Team & demo'], ['announce', 'Send message'], ['reports', 'Reports'], ['audit', 'Audit log']];
 
 route('admin', ['admin'], async ({ root }) => {
   root.innerHTML = `<h1>Admin dashboard</h1><div class="tabs" id="atabs">${TABS.map(([k, l], i) => `<button data-t="${k}" class="${i ? '' : 'on'}">${l}</button>`).join('')}</div><div id="abody"></div>`;
@@ -100,6 +100,28 @@ const views = {
     });
   },
 
+  async announce(el) {
+    const d = await api('/admin/announcements');
+    const label = x => x.audience === 'all' ? 'Everyone' : x.audience === 'viewers' ? 'All viewers' : x.audience === 'curators' ? 'All creators' : 'To ' + esc(x.to || 'user');
+    el.innerHTML = `<div class="stack"><div class="card"><h2 style="margin-top:0">Send a message from VIDXX Team</h2>
+      <p class="muted small" style="margin-top:0">It appears at the top of the person's Messages page as an official announcement and sends a push notification to those who turned them on. It is one-way (they can't reply to it).</p>
+      <form id="af" class="stack"><div class="field"><label>Send to</label><select id="a1"><option value="all">Everyone (viewers and creators)</option><option value="viewers">All viewers</option><option value="curators">All creators</option><option value="user">One person</option></select></div>
+        <div class="field" id="a2w" hidden><label>Username</label><input type="text" id="a2" autocomplete="off"></div>
+        <div class="field"><label>Message</label><textarea id="a3" rows="4" maxlength="1000"></textarea></div>
+        <button class="btn">Send</button></form></div>
+      <div class="card"><h2 style="margin-top:0">Sent messages</h2>${d.announcements.length ? `<div class="tablewrap"><table><thead><tr><th>Date</th><th>To</th><th>Message</th><th></th></tr></thead><tbody>${d.announcements.map(x => `<tr><td>${dtime(x.created_at)}</td><td>${label(x)}</td><td style="white-space:pre-wrap;max-width:360px">${esc(x.body)}</td><td><button class="btn alt sm ad" data-id="${x.id}">Delete</button></td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">Nothing sent yet.</div>'}</div></div>`;
+    $('#a1').onchange = () => { $('#a2w').hidden = $('#a1').value !== 'user'; };
+    $('#af').onsubmit = async e => {
+      e.preventDefault();
+      const aud = $('#a1').value, body = $('#a3').value.trim();
+      if (!body) return toast('Write a message first', true);
+      if (aud !== 'user' && !confirm(`Send this to ${aud === 'all' ? 'everyone' : 'all ' + aud}?`)) return;
+      const btn = $('#af button'); busy(btn, true, 'Sending…');
+      try { const r = await api('/admin/announce', { method: 'POST', body: { audience: aud, username: $('#a2').value, body } }); toast(`Sent to ${r.recipients} ${r.recipients === 1 ? 'person' : 'people'}`); views.announce(el); }
+      catch (er) { toast(er.message, true); busy(btn, false); }
+    };
+    $$('.ad', el).forEach(b => b.onclick = async () => { if (!confirm('Delete this message for everyone?')) return; try { await api('/admin/announcements/' + b.dataset.id, { method: 'DELETE' }); views.announce(el); } catch (er) { toast(er.message, true); } });
+  },
   async team(el) {
     const d = await api('/admin/team');
     const s = d.settings;

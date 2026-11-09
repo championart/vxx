@@ -48,7 +48,10 @@ async function pushControls(el) {
     const on = !!sub && Notification.permission === 'granted';
     const denied = Notification.permission === 'denied';
     el.innerHTML = `<div class="card"><div class="row between" style="flex-wrap:nowrap;gap:12px"><div><b>Notifications</b><div class="small muted">${on ? 'On for this device. You get alerts for new messages' + (S.me && S.me.account_type === 'viewer' ? ' and when creators you follow go live.' : '.') : denied ? 'Blocked in your browser settings.' : 'Get alerts for new messages' + (S.me && S.me.account_type === 'viewer' ? ' and when creators you follow go live.' : '.')}${isIOS() && !standalone() ? ' On iPhone, add VIDXX to your Home Screen first.' : ''}</div></div>
-      <button class="btn sm ${on ? 'alt' : ''}" id="pushbtn" ${denied ? 'disabled' : ''}>${on ? 'Turn off' : 'Turn on'}</button></div></div>`;
+      <button class="btn sm ${on ? 'alt' : ''}" id="pushbtn" ${denied ? 'disabled' : ''}>${on ? 'Turn off' : 'Turn on'}</button></div>
+      <label style="display:flex;gap:8px;align-items:center;margin-top:10px"><input type="checkbox" id="soundtoggle" ${window.CV.soundOn() ? 'checked' : ''}> Play a sound for new messages while the app is open <button type="button" class="btn alt sm" id="soundtest">Test</button></label></div>`;
+    $('#soundtoggle', el).onchange = e => window.CV.setSound(e.target.checked);
+    $('#soundtest', el).onclick = () => { window.CV.unlockAudio(); setTimeout(() => window.CV.ding(true), 60); };
     $('#pushbtn', el).onclick = async e => {
       e.target.disabled = true;
       try { on ? await disable() : await enable(); toast(on ? 'Notifications off' : 'Notifications on'); }

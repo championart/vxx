@@ -1462,6 +1462,62 @@ async function expireMedia() {
   }
 }
 
+
+// ---------- announcements from the admin (one-way, shown at the top of Messages) ----------
+async function visibleAnnouncements(me, limit) {
+  const types = me.account_type === 'viewer' ? 'viewers' : 'curators';
+  const { data, error } = await db.from('announcements').select('id,body,audience,created_at')
+    .or(`audience.eq.all,audience.eq.${types},and(audience.eq.user,user_id.eq.${me.id})`)
+    .gt('created_at', me.created_at).order('created_at', { ascending: false }).limit(limit);
+  if (error) throw new Error(error.message);
+  const ids = (data || []).map(a => a.id);
+  let read = new Set();
+  if (ids.length) {
+    const { data: r } = await db.from('announcement_reads').select('announcement_id').eq('user_id', me.id).in('announcement_id', ids);
+    read = new Set((r || []).map(x => x.announcement_id));
+  }
+  return (data || []).map(a => ({ id: a.id, body: a.body, created_at: a.created_at, unread: !read.has(a.id) }));
+}
+app.get('/api/announcements', auth, dmRoles, wrap(async (req, res) => {
+  res.json({ announcements: await visibleAnnouncements(req.profile, 20) });
+}));
+app.post('/api/announcements/read', auth, dmRoles, wrap(async (req, res) => {
+  const list = (await visibleAnnouncements(req.profile, 50)).filter(a => a.unread);
+  if (list.length) await db.from('announcement_reads').upsert(list.map(a => ({ user_id: req.profile.id, announcement_id: a.id })), { onConflict: 'user_id,announcement_id', ignoreDuplicates: true });
+  res.json({ ok: true });
+}));
+app.post('/api/admin/announce', ...admin, wrap(async (req, res) => {
+  const audience = ['all', 'viewers', 'curators', 'user'].includes((req.body || {}).audience) ? req.body.audience : null;
+  const body = cleanText((req.body || {}).body, 1000);
+  if (!audience) return res.status(400).json({ error: 'Choose who to send it to' });
+  if (!body) return res.status(400).json({ error: 'Write a message first' });
+  let userId = null, targets = [];
+  if (audience === 'user') {
+    const name = String((req.body || {}).username || '').trim().replace(/^@/, '');
+    const { data: u } = await db.from('profiles').select('id,account_type,status').ilike('username', exactName(name)).maybeSingle();
+    if (!u || !['viewer', 'curator'].includes(u.account_type)) return res.status(404).json({ error: 'No viewer or creator with that username' });
+    userId = u.id; targets = [u.id];
+  } else {
+    let q = db.from('profiles').select('id,is_demo').eq('status', 'active').limit(5000);
+    q = audience === 'viewers' ? q.eq('account_type', 'viewer') : audience === 'curators' ? q.eq('account_type', 'curator') : q.in('account_type', ['viewer', 'curator']);
+    const { data: ps } = await q;
+    targets = (ps || []).filter(p => !p.is_demo).map(p => p.id);
+  }
+  const { data: a, error } = await db.from('announcements').insert({ body, audience, user_id: userId, created_by: req.profile.id }).select('id').single();
+  if (error) throw new Error(error.message);
+  await audit(req.profile.id, 'announcement_sent', { id: a.id, audience, to: userId });
+  pushTo(targets, { title: 'VIDXX Team', body: body.slice(0, 120), url: '#/messages', tag: 'ann-' + a.id }).catch(e => console.error('announce push', e.message));
+  res.json({ ok: true, id: a.id, recipients: targets.length });
+}));
+app.get('/api/admin/announcements', ...admin, wrap(async (req, res) => {
+  const { data } = await db.from('announcements').select('id,body,audience,created_at,user:profiles!announcements_user_id_fkey(username)').order('created_at', { ascending: false }).limit(30);
+  res.json({ announcements: (data || []).map(a => ({ id: a.id, body: a.body, audience: a.audience, created_at: a.created_at, to: a.user ? a.user.username : null })) });
+}));
+app.delete('/api/admin/announcements/:id', ...admin, wrap(async (req, res) => {
+  await db.from('announcements').delete().eq('id', parseInt(req.params.id) || 0);
+  res.json({ ok: true });
+}));
+
 app.get('/api/messages/unread', auth, dmRoles, wrap(async (req, res) => {
   const { data } = await db.rpc('unread_total', { p_user: req.profile.id });
   let live_following = 0;
@@ -1473,7 +1529,9 @@ app.get('/api/messages/unread', auth, dmRoles, wrap(async (req, res) => {
       live_following = count || 0;
     }
   }
-  res.json({ unread: Number(data || 0), live_following });
+  let announcements = 0;
+  try { announcements = (await visibleAnnouncements(req.profile, 50)).filter(a => a.unread).length; } catch (_) { /* table not created yet */ }
+  res.json({ unread: Number(data || 0), announcements, live_following });
 }));
 
 app.get('/api/conversations', auth, dmRoles, wrap(async (req, res) => {
