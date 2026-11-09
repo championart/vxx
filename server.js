@@ -335,7 +335,7 @@ async function ensureConversation(curatorId, viewerId) {
 }
 async function sendWelcome(viewerId) {
   const s = await getSettings();
-  if (Number(s.welcome_enabled) !== 1) return;
+  if (Number(s.welcome_enabled ?? 1) !== 1) return;
   const { data: team } = await db.from('profiles').select('id').eq('is_system', true).limit(1).maybeSingle();
   if (!team) return;   // no Team account yet: do not mark as welcomed
   const { data: claimed } = await db.from('profiles').update({ welcomed_at: new Date().toISOString() }).eq('id', viewerId).is('welcomed_at', null).select('id');
@@ -443,7 +443,7 @@ app.get('/api/creators', auth, role('viewer', 'admin'), wrap(async (req, res) =>
     .sort((a, b) => Number(b.followers) - Number(a.followers) || Number(b.videos) - Number(a.videos) || String(a.username).localeCompare(b.username))
     .slice(0, 200).map(shape);
   // labelled demo accounts always come after real creators, and only while the admin switch is on
-  const demo = Number(s.demo_enabled) === 1 ? (data || []).filter(c => c.demo).sort((a, b) => String(a.username).localeCompare(b.username)).slice(0, 60).map(shape) : [];
+  const demo = Number(s.demo_enabled ?? 1) === 1 ? (data || []).filter(c => c.demo).sort((a, b) => String(a.username).localeCompare(b.username)).slice(0, 60).map(shape) : [];
   res.json({ creators: [...real, ...demo] });
 }));
 
@@ -925,8 +925,11 @@ app.put('/api/admin/settings', ...admin, wrap(async (req, res) => {
 
 // ---------- admin: VIDXX Team account, welcome messages, labelled demo accounts ----------
 const WELCOME_KEYS = { welcome_enabled: 0, welcome_delay_seconds: 0, welcome_gap_seconds: 1, demo_enabled: 0 };
-async function makeSpecialAccount(username, flag, gender) {
-  const email = `${flag === 'is_system' ? 'team' : 'demo'}.${crypto.randomBytes(6).toString('hex')}@vidxx-internal.example`;
+async function makeSpecialAccount(username, flag, gender, adminEmail) {
+  // Supabase rejects fake domains such as example.com, so use the admin's own real address with a +tag. No email is ever sent (email_confirm is true).
+  const [local, domain] = String(adminEmail || '').split('@');
+  if (!local || !domain) throw new Error('Admin email missing');
+  const email = `${local.split('+')[0]}+${flag === 'is_system' ? 'vidxxteam' : 'vidxxdemo'}${crypto.randomBytes(5).toString('hex')}@${domain}`;
   const cu = await db.auth.admin.createUser({ email, password: crypto.randomBytes(24).toString('hex'), email_confirm: true });
   if (cu.error) throw new Error(cu.error.message);
   const id = cu.data.user.id;
@@ -940,7 +943,7 @@ app.get('/api/admin/team', ...admin, wrap(async (req, res) => {
   const s = await getSettings();
   res.json({
     team: team || null, demo: demo || [],
-    settings: { welcome_enabled: Number(s.welcome_enabled), welcome_delay_seconds: Number(s.welcome_delay_seconds), welcome_gap_seconds: Number(s.welcome_gap_seconds), demo_enabled: Number(s.demo_enabled), welcome_text: s.welcome_text || '' }
+    settings: { welcome_enabled: Number(s.welcome_enabled ?? 1), welcome_delay_seconds: Number(s.welcome_delay_seconds ?? 3), welcome_gap_seconds: Number(s.welcome_gap_seconds ?? 10), demo_enabled: Number(s.demo_enabled ?? 1), welcome_text: s.welcome_text || '' }
   });
 }));
 app.post('/api/admin/team/create', ...admin, wrap(async (req, res) => {
@@ -948,7 +951,7 @@ app.post('/api/admin/team/create', ...admin, wrap(async (req, res) => {
   if (have) return res.status(409).json({ error: 'The VIDXX Team account already exists' });
   const { data: taken } = await db.from('profiles').select('id').ilike('username', 'VIDXX_Team').maybeSingle();
   if (taken) return res.status(409).json({ error: 'The username VIDXX_Team is already taken' });
-  const id = await makeSpecialAccount('VIDXX_Team', 'is_system', 'male');
+  const id = await makeSpecialAccount('VIDXX_Team', 'is_system', 'male', req.user.email);
   await audit(req.profile.id, 'team_account_created', { id });
   res.json({ ok: true });
 }));
@@ -975,7 +978,7 @@ app.post('/api/admin/demo', ...admin, wrap(async (req, res) => {
     if (!/^[A-Za-z0-9_]{3,20}$/.test(n)) { skipped.push(n + ' (invalid)'); continue; }
     const { data: taken } = await db.from('profiles').select('id').ilike('username', exactName(n)).maybeSingle();
     if (taken) { skipped.push(n + ' (taken)'); continue; }
-    try { await makeSpecialAccount(n, 'is_demo', gender); created.push(n); } catch (e) { skipped.push(n + ' (' + e.message + ')'); }
+    try { await makeSpecialAccount(n, 'is_demo', gender, req.user.email); created.push(n); } catch (e) { skipped.push(n + ' (' + e.message + ')'); }
   }
   await audit(req.profile.id, 'demo_accounts_created', { created, skipped });
   res.json({ created, skipped });
@@ -1573,7 +1576,10 @@ app.post('/api/conversations/:id/block', auth, role('viewer'), wrap(async (req, 
 }));
 
 // ---------- static frontend ----------
-app.use(express.static(path.join(__dirname, 'public'), { maxAge: '1h' }));
+app.use(express.static(path.join(__dirname, 'public'), {
+  maxAge: '1h',
+  setHeaders: (res, file) => { if (/\.(js|html|css|webmanifest)$/.test(file)) res.setHeader('Cache-Control', 'no-cache'); }   // always pick up new deploys
+}));
 app.use('/api', (req, res) => res.status(404).json({ error: 'Not found' }));
 
 // eslint-disable-next-line no-unused-vars
@@ -1628,5 +1634,7 @@ async function ensureBuckets() {
 }
 db.from('profiles').select('id', { head: true, count: 'exact' }).then(r => { if (r.error) console.error('DATABASE NOT READY: run supabase/schema.sql in the Supabase SQL Editor. (' + r.error.message + ')'); });
 ensureBuckets().catch(e => console.error('ensureBuckets', e.message));
+db.from('profiles').select('is_demo,is_system,welcomed_at').limit(1).then(r => { if (r.error) console.error('DATABASE OUT OF DATE: run supabase/schema.sql again in the Supabase SQL Editor (Team welcome / demo accounts need it). (' + r.error.message + ')'); });
+db.from('push_subscriptions').select('id', { head: true, count: 'exact' }).then(r => { if (r.error) console.error('DATABASE OUT OF DATE (push): run supabase/schema.sql again. (' + r.error.message + ')'); });
 
 app.listen(PORT, () => console.log(`VIDXX running on port ${PORT}`));
